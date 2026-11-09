@@ -1,0 +1,26 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="256dp"
+    android:height="256dp"
+    android:viewportWidth="256"
+    android:viewportHeight="256">
+    <!-- About 页展示的软件 logo：圆角渐变方块 + 白色盾牌锁孔 -->
+    <path
+        android:pathData="M48,0 H208 C234.5,0 256,21.5 256,48 V208 C256,234.5 234.5,256 208,256 H48 C21.5,256 0,234.5 0,208 V48 C0,21.5 21.5,0 48,0 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="0"
+                android:startY="0"
+                android:endX="256"
+                android:endY="256"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FF5CA06E" />
+                <item android:offset="1.0" android:color="#FF1E4230" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M128,56 L178,80 V130 C178,158 159,179 128,199 C97,179 78,158 78,130 V80 Z M128,86 m-14,0 a14,14 0 1,0 28,0 a14,14 0 1,0 -28,0 Z M118,99 L138,99 L150,150 C152,158 104,158 106,150 Z" />
+</vector>

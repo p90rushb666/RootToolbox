@@ -1,0 +1,37 @@
+# ---- Android / Gradle 构建产物 ----
+*.iml
+.gradle/
+.kotlin/
+build/
+app/build/
+captures/
+.externalNativeBuild/
+.cxx/
+local.properties
+.idea/
+.DS_Store
+Thumbs.db
+
+# 本机自带的 Gradle 发行版；仓库统一使用 Gradle Wrapper
+.toolchain/
+
+# ---- 编译产物：请走 GitHub Releases 分发，不要提交进仓库 ----
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# ---- 签名与密钥材料：绝不入库 ----
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+keybox*.xml
+keystore.properties
+signing.properties
+
+# ---- 本地工作记录（非项目源码） ----
+.workbuddy/

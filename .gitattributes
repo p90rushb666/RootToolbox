@@ -1,0 +1,7 @@
+# 保证跨平台换行符一致（仓库与工作区统一 LF）
+* text=auto eol=lf
+gradlew text eol=lf
+*.bat text eol=crlf
+*.jar binary
+*.png binary
+*.apk binary
