@@ -15,8 +15,11 @@
 - **安全的替换流程**：XML 合法性校验 → 备份原文件为 `.bak.<时间戳>` 并核对大小 → 写入临时文件 → `chmod` / `chown` / `mv` / `restorecon` → SHA-256 回读校验；任一步失败即保留备份并尝试回滚。可选「写入前校验设备凭据」。
 - **备份中心**：扫描目标目录下的 `keybox.xml.bak.*` / `*.bak`，解析时间戳（文件名 + `stat` 校正）、大小、SHA-256 与证书信息；支持只读预览、一键恢复、删除单个、按「保留最近 N 个」批量清理。恢复同样走上面的备份→写入→校验→回滚链路，不会直接 `cp`。
 - **完整性检测**：走 Android 官方 Play Integrity API，token 由服务端用 Google Cloud 服务账号解码，展示 `appRecognitionVerdict` / `deviceRecognitionVerdict` / `meetsDeviceIntegrity` 等原始字段与原始 JSON。未配置解码服务、缺少 GMS、网络失败时一律显示「无法判定」，不会给出任何推测性的三绿结论。
+- **模块更新检查**：扫描 `/data/adb/modules/*/module.prop` 的 `updateJson`，同时对照对应仓库的 GitHub Release，提示可更新版本；可下载 zip 并查看实时进度，下载完成后经二次确认交给 Magisk / KernelSU / APatch 刷写，或删除安装包。临时文件集中管理、支持一键清空（两级确认）。安装包只存 app 私有目录，不写入 `/data/adb`；刷写不自动重启。
 - **诊断**：内存日志（上限 600 条）、崩溃报告、一键复制完整诊断报告便于反馈问题。
 - **设置**：深色模式、Monet 动态取色、主题主色、备份保留数量、写入前凭据校验、完整性解码服务端点与项目编号。
+
+界面全部基于 [mochi-compose](https://github.com/feice11/mochi-compose)：底部标签栏带融球水滴拖尾，首页为「Root 权限整行卡片 + 每行两个的目录卡片」布局，卡片带容器变形转场与按压形变/高光，列表、对话框、分段控件、开关、进度环等均使用库组件。
 
 ## 运行环境
 
@@ -57,9 +60,9 @@
 
 ```
 app/src/main/java/dev/mochi/rootbox/
-├── core/        # Root 检测、Shell、模块扫描、Keybox 解析/安装、备份扫描、模块加载检测、Play Integrity
+├── core/        # Root 检测、Shell、模块扫描/加载/更新、Keybox 解析与安装、备份、Play Integrity
 ├── data/        # 网络请求、设置、在线索引数据源、数据模型、安装预览模型
-├── ui/          # Compose 页面（首页、环境、模块、密钥、预览、备份、完整性、目标、诊断、设置、关于）
+├── ui/          # Compose 页面（首页、环境、模块、模块更新、密钥、预览、备份、完整性、目标、诊断、设置、关于）
 ├── AppViewModel.kt
 ├── MainActivity.kt / RootToolboxApp.kt
 └── RootToolboxApplication.kt
@@ -80,13 +83,24 @@ Play Integrity 返回的是**加密 token**，客户端无法解密，也不能�
 
 服务端必须校验 nonce、`requestPackageName`、签名证书摘要与 `timestampMillis` 新鲜度，任一项不通过都不返回 verdict。
 
+## 模块更新检查
+
+扫描每个模块 `module.prop` 里的 `updateJson`（Magisk 模块更新约定），并尝试从该地址或 `zipUrl` 推断 GitHub 仓库、对照最新 Release 的 tag 与 zip 资源。两个来源任一可用即可下载；只有 `versionCode` 变大或版本字符串变化时才提示「有新版本」。
+
+- 下载的 zip 保存在 app 私有目录 `filesDir/module-updates/`，不写 `/data/adb`，不需要额外权限。
+- 刷写会把安装包复制到 `/data/local/tmp` 后依次尝试 `magisk --install-module` / `ksud module install` / `apd module install`，**不自动重启**；模块通常需重启设备才生效。
+- 删除单个、一键清空、刷写都有二次确认。
+
+> 该功能是「检查 + 下载 + 交给模块管理器」，不绕过模块管理器、不修改系统分区，也不保证第三方 `updateJson` 的可用性与真实性。
+
 ## 已知限制与风险
 
 - **完整性检测依赖 GMS**：没有 Google Play 服务的设备（多数国内 ROM）取不到 token，只能显示「无法判定」。这不是解码服务的问题。
 - **侧载应用的 `appRecognitionVerdict` 通常不是 `PLAY_RECOGNIZED`**：这是正常的，不代表设备完整性失败；只有 `deviceRecognitionVerdict` 反映设备状态。
 - **模块加载状态是静态证据**：本应用不读取运行中进程的内存，无法证明模块此刻确实已注入；`已加载` 仅表示模块目录、标记文件与 keybox 一致且无待重启更新。
 - **备份与回滚不能覆盖所有意外**：写入过程若遇到断电、文件系统错误或第三方模块并发改写，仍可能损坏配置，请自行保留离线备份。
-- **在线索引可用性不受本项目管理**：两个第三方站点的内容、状态标注与下载端点随时可能变化。
+- **在线索引与更新源可用性不受本项目管理**：两个第三方站点、模块 `updateJson` 与 GitHub Release 的内容、状态标注与下载地址随时可能变化；查询失败时只提示原因，不猜测有更新。
+- **刷写依赖设备上的模块管理器**：没有 `magisk` / `ksud` / `apd` 时会明确失败；安装成功不代表已生效，需自行重启。
 
 ## 免责声明
 

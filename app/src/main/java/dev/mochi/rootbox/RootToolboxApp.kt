@@ -20,6 +20,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -33,6 +34,7 @@ import dev.mochi.rootbox.ui.InstallPreviewScreen
 import dev.mochi.rootbox.ui.IntegrityScreen
 import dev.mochi.rootbox.ui.KeysScreen
 import dev.mochi.rootbox.ui.ModuleScreen
+import dev.mochi.rootbox.ui.ModuleUpdateScreen
 import dev.mochi.rootbox.ui.SettingsScreen
 import dev.mochi.rootbox.ui.TargetScreen
 import dev.mochi.rootbox.ui.colorSchemeMode
@@ -63,6 +65,7 @@ private const val RouteAbout = "about"
 private const val RouteSettings = "settings"
 private const val RouteBackup = "backup"
 private const val RouteIntegrity = "integrity"
+private const val RouteModuleUpdates = "module-updates"
 private const val RouteKeys = "keys"
 private const val RoutePreview = "preview"
 
@@ -71,6 +74,7 @@ private const val SourceEnvironment = "home/environment"
 private const val SourceModule = "home/module"
 private const val SourceDiagnostics = "home/diagnostics"
 private const val SourceIntegrity = "home/integrity"
+private const val SourceModuleUpdates = "home/module-updates"
 
 @Composable
 fun RootToolboxApp(viewModel: AppViewModel) {
@@ -122,7 +126,11 @@ fun RootToolboxApp(viewModel: AppViewModel) {
 
         val selectedTab = rememberSaveable { mutableIntStateOf(0) }
         val tabStateHolder = rememberSaveableStateHolder()
-        val barBehavior = remember { MochiTabBarDefaults.behavior() }
+        // demo TabBarPage 里的「融球残影」开关：fuseRadius > 0 时选中块后面会拖出一颗
+        // 水滴并在追上后融回。material = null 锁定纯色标签栏——玻璃分支不画这颗水滴。
+        val barBehavior = remember {
+            MochiTabBarDefaults.behavior(gel = 0.6f, fuseRadius = 22.dp)
+        }
         val tabItems = remember {
             persistentListOf(
                 MochiTabItem(
@@ -170,6 +178,7 @@ fun RootToolboxApp(viewModel: AppViewModel) {
                     onSelect = { selectedTab.intValue = it },
                     items = tabItems,
                     behavior = barBehavior,
+                    material = null,
                     modifier = Modifier.align(Alignment.BottomCenter),
                 )
             }
@@ -196,6 +205,7 @@ private fun HomeTab(
                 onOpenModule = { nav.push(RouteModule, from = SourceModule) },
                 onOpenDiagnostics = { nav.push(RouteDiagnostics, from = SourceDiagnostics) },
                 onOpenIntegrity = { nav.push(RouteIntegrity, from = SourceIntegrity) },
+                onOpenModuleUpdates = { nav.push(RouteModuleUpdates, from = SourceModuleUpdates) },
                 onOpenAbout = { nav.push(RouteAbout) },
             )
 
@@ -210,6 +220,7 @@ private fun HomeTab(
             )
             RouteBackup -> BackupScreen(state, viewModel, back, showToast)
             RouteIntegrity -> IntegrityScreen(state, settings, viewModel, back, showToast)
+            RouteModuleUpdates -> ModuleUpdateScreen(state, viewModel, back, showToast)
             RouteTarget -> TargetScreen(state, viewModel, back, showToast)
             RouteDiagnostics -> DiagnosticsScreen(state, viewModel, back, showToast)
             RouteAbout -> AboutScreen(back)
@@ -278,6 +289,7 @@ private fun titleFor(route: String): String = when (route) {
     RouteSettings -> "设置"
     RouteBackup -> "备份中心"
     RouteIntegrity -> "完整性检测"
+    RouteModuleUpdates -> "模块更新"
     RouteKeys -> "密钥库"
     RoutePreview -> "安装预览"
     else -> route

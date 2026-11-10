@@ -14,8 +14,13 @@ import dev.mochi.rootbox.core.IntegrityOutcome
 import dev.mochi.rootbox.core.KeyboxInstaller
 import dev.mochi.rootbox.core.KeyboxMeta
 import dev.mochi.rootbox.core.KeyboxParser
+import dev.mochi.rootbox.core.ModuleFlasher
 import dev.mochi.rootbox.core.ModuleLoadChecker
 import dev.mochi.rootbox.core.ModuleLoadStatus
+import dev.mochi.rootbox.core.ModuleUpdateChecker
+import dev.mochi.rootbox.core.ModuleUpdateItem
+import dev.mochi.rootbox.core.DownloadedModule
+import dev.mochi.rootbox.core.ModuleDownloadStore
 import dev.mochi.rootbox.core.RootChecker
 import dev.mochi.rootbox.core.RootInfo
 import dev.mochi.rootbox.core.Shell
@@ -46,6 +51,26 @@ data class InstallUi(
     val result: InstallResult? = null,
 )
 
+/** 模块更新检查页的完整状态。 */
+data class ModuleUpdateUi(
+    val items: List<ModuleUpdateItem> = emptyList(),
+    val loading: Boolean = false,
+    val error: String? = null,
+    val checkedAt: Long? = null,
+    val files: List<DownloadedModule> = emptyList(),
+    /** 正在下载的模块 id -> 进度。 */
+    val downloading: Map<String, DownloadProgress> = emptyMap(),
+    val flashing: String? = null,
+    val flashResult: Pair<Boolean, String>? = null,
+)
+
+data class DownloadProgress(
+    val name: String,
+    val read: Long,
+    val total: Long,
+    val fraction: Float,
+)
+
 data class AppState(
     val rootChecking: Boolean = true,
     val root: RootInfo? = null,
@@ -72,6 +97,7 @@ data class AppState(
     val integrity: IntegrityOutcome? = null,
     val integrityRunning: Boolean = false,
     val integrityPhase: String = "",
+    val moduleUpdates: ModuleUpdateUi = ModuleUpdateUi(),
 ) {
     val allItems: List<KeyboxItem> get() = sources.flatMap { it.items }
 }
@@ -570,6 +596,141 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             ) { phase -> _state.update { it.copy(integrityPhase = phase) } }
             _state.update { it.copy(integrity = outcome, integrityRunning = false, integrityPhase = "") }
             DiagLog.info("integrity", if (outcome.ok) "判定已返回" else "失败：${outcome.failure?.kind}")
+        }
+    }
+
+    // ---------------------------------------------------------------- 模块更新检查
+
+    fun loadModuleUpdates() {
+        if (_state.value.moduleUpdates.loading) return
+        viewModelScope.launch { checkModuleUpdates() }
+    }
+
+    private suspend fun checkModuleUpdates() {
+        _state.update {
+            it.copy(moduleUpdates = it.moduleUpdates.copy(loading = true, error = null))
+        }
+        val (modules, scanError) = ModuleUpdateChecker.scan(_state.value.root?.granted == true)
+        val items = if (scanError != null) emptyList() else ModuleUpdateChecker.check(modules)
+        _state.update {
+            it.copy(
+                moduleUpdates = it.moduleUpdates.copy(
+                    items = items,
+                    loading = false,
+                    error = scanError,
+                    checkedAt = System.currentTimeMillis(),
+                    files = ModuleDownloadStore.list(getApplication()),
+                ),
+            )
+        }
+    }
+
+    /** 下载 zip 到 app 私有目录，UI 展示实时进度。 */
+    fun downloadModuleUpdate(item: ModuleUpdateItem) {
+        val url = item.zipUrl ?: return
+        val id = item.module.id
+        if (_state.value.moduleUpdates.downloading.containsKey(id)) return
+        val fileName = ModuleDownloadStore.safeFileName(id, item.latestVersion)
+        viewModelScope.launch {
+            _state.update { state ->
+                state.copy(
+                    moduleUpdates = state.moduleUpdates.copy(
+                        downloading = state.moduleUpdates.downloading + (
+                            id to DownloadProgress(fileName, 0, -1, 0f)
+                        ),
+                    ),
+                )
+            }
+            try {
+                val bytes = Http.getBytes(url) { read, total ->
+                    val fraction = if (total > 0) read.toFloat() / total.toFloat() else 0f
+                    _state.update { state ->
+                        val current = state.moduleUpdates.downloading[id] ?: return@update state
+                        state.copy(
+                            moduleUpdates = state.moduleUpdates.copy(
+                                downloading = state.moduleUpdates.downloading + (
+                                    id to current.copy(read = read, total = total, fraction = fraction)
+                                ),
+                            ),
+                        )
+                    }
+                }
+                ModuleDownloadStore.save(getApplication(), fileName, bytes)
+                _state.update { state ->
+                    state.copy(
+                        moduleUpdates = state.moduleUpdates.copy(
+                            downloading = state.moduleUpdates.downloading - id,
+                            files = ModuleDownloadStore.list(getApplication()),
+                        ),
+                        message = "已下载 $fileName",
+                    )
+                }
+            } catch (t: Throwable) {
+                DiagLog.error("update", "$id 下载失败", t)
+                _state.update { state ->
+                    state.copy(
+                        moduleUpdates = state.moduleUpdates.copy(
+                            downloading = state.moduleUpdates.downloading - id,
+                        ),
+                        message = "下载失败：${t.javaClass.simpleName}: ${t.message}",
+                    )
+                }
+            }
+        }
+    }
+
+    fun deleteDownloaded(file: DownloadedModule) {
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) { ModuleDownloadStore.delete(file.path) }
+            _state.update { state ->
+                state.copy(
+                    moduleUpdates = state.moduleUpdates.copy(
+                        files = ModuleDownloadStore.list(getApplication()),
+                    ),
+                    message = if (ok) "已删除 ${file.name}" else "删除失败",
+                )
+            }
+        }
+    }
+
+    fun clearDownloaded() {
+        viewModelScope.launch {
+            val count = withContext(Dispatchers.IO) { ModuleDownloadStore.clear(getApplication()) }
+            _state.update { state ->
+                state.copy(
+                    moduleUpdates = state.moduleUpdates.copy(
+                        files = ModuleDownloadStore.list(getApplication()),
+                    ),
+                    message = "已清空 $count 个临时文件",
+                )
+            }
+        }
+    }
+
+    /** 刷写只在 UI 二次确认之后调用；不自动重启。 */
+    fun flashModule(file: DownloadedModule) {
+        if (_state.value.moduleUpdates.flashing != null) return
+        viewModelScope.launch {
+            _state.update { state ->
+                state.copy(
+                    moduleUpdates = state.moduleUpdates.copy(flashing = file.name, flashResult = null),
+                )
+            }
+            val result = ModuleFlasher.flash(file.path)
+            _state.update { state ->
+                state.copy(
+                    moduleUpdates = state.moduleUpdates.copy(
+                        flashing = null,
+                        flashResult = result,
+                    ),
+                )
+            }
+        }
+    }
+
+    fun dismissFlashResult() {
+        _state.update { state ->
+            state.copy(moduleUpdates = state.moduleUpdates.copy(flashResult = null))
         }
     }
 
