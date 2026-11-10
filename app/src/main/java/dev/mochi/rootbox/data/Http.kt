@@ -1,11 +1,17 @@
 package dev.mochi.rootbox.data
 
 import dev.mochi.rootbox.core.DiagLog
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.job
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+
+/** 用户主动取消下载：不算网络失败，不写错误日志。 */
+class DownloadCancelledException : Exception("下载已取消")
 
 object Http {
 
@@ -15,9 +21,11 @@ object Http {
 
     suspend fun getBytes(
         url: String,
+        /** 放在最后，保持 `getBytes(url) { read, total -> ... }` 的尾随 lambda 写法可用。 */
         onProgress: ((read: Long, total: Long) -> Unit)? = null,
     ): ByteArray = withContext(Dispatchers.IO) {
         var connection: HttpURLConnection? = null
+        var completionHandle: kotlinx.coroutines.DisposableHandle? = null
         try {
             connection = (URL(url).openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
@@ -26,6 +34,10 @@ object Http {
                 instanceFollowRedirects = true
                 setRequestProperty("User-Agent", USER_AGENT)
                 setRequestProperty("Accept", "application/json, application/xml, text/plain, */*")
+            }
+            // cancel 时断开连接，避免阻塞的 read 一直等到超时。
+            completionHandle = currentCoroutineContext().job.invokeOnCompletion { cause ->
+                if (cause != null) runCatching { connection?.disconnect() }
             }
             val code = connection.responseCode
             if (code !in 200..299) {
@@ -38,7 +50,18 @@ object Http {
                 val buffer = ByteArray(16 * 1024)
                 var readTotal = 0L
                 while (true) {
-                    val read = input.read(buffer)
+                    // 用户取消时协程不再 active；抛专用异常，不记网络失败日志。
+                    val job = currentCoroutineContext()[kotlinx.coroutines.Job]
+                    if (job?.isActive == false) throw DownloadCancelledException()
+                    val read = try {
+                        input.read(buffer)
+                    } catch (t: Throwable) {
+                        // cancel 会 disconnect 连接让阻塞的 read 立即返回，这里同样归类为取消。
+                        if (currentCoroutineContext()[kotlinx.coroutines.Job]?.isActive == false) {
+                            throw DownloadCancelledException()
+                        }
+                        throw t
+                    }
                     if (read < 0) break
                     output.write(buffer, 0, read)
                     readTotal += read
@@ -48,10 +71,15 @@ object Http {
             val bytes = output.toByteArray()
             DiagLog.info("http", "GET $url -> ${bytes.size}B")
             bytes
+        } catch (t: DownloadCancelledException) {
+            throw t
+        } catch (t: CancellationException) {
+            throw t
         } catch (t: Throwable) {
             DiagLog.error("http", "GET $url 失败", t)
             throw t
         } finally {
+            completionHandle?.dispose()
             connection?.disconnect()
         }
     }

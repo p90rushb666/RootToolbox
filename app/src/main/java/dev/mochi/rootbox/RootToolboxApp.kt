@@ -45,6 +45,8 @@ import ui.feice.mochi.basic.MochiTabBarDefaults
 import ui.feice.mochi.basic.MochiTabItem
 import ui.feice.mochi.basic.MochiToastHost
 import ui.feice.mochi.basic.rememberMochiToastState
+import ui.feice.mochi.effect.content.MochiBlurCrossfade
+import ui.feice.mochi.effect.content.MochiBlurTransition
 import ui.feice.mochi.effect.overscroll.ProvideMochiOverscroll
 import ui.feice.mochi.icons.MochiIconStyle
 import ui.feice.mochi.icons.MochiIonicon
@@ -160,14 +162,22 @@ fun RootToolboxApp(viewModel: AppViewModel) {
                     .background(MochiDefaults.groupedBackground()),
             ) {
                 CompositionLocalProvider(LocalMochiBottomBarInset provides barBehavior.height) {
-                    tabStateHolder.SaveableStateProvider(selectedTab.intValue) {
-                        Box(Modifier.fillMaxSize()) {
-                            when (selectedTab.intValue) {
-                                0 -> HomeTab(state, settings, viewModel, showToast)
-                                1 -> KeysTab(settings, state, viewModel, showToast, openBrowser)
-                                else -> SettingsTab(
-                                    settings, state, viewModel, settings.predictiveBack, showToast,
-                                )
+                    // 组件库的模糊替换转场，配 blur = 0 / scale = 1 退化成纯淡入淡出：
+                    // 半径为 0 时 mochiBlur 不建离屏图层，不会回到 MochiTabScaffold 那种整页录制的掉帧路径。
+                    MochiBlurCrossfade(
+                        targetState = selectedTab.intValue,
+                        transition = MochiBlurTransition(blur = 0.dp, scale = 1f, slide = 0f),
+                        modifier = Modifier.fillMaxSize(),
+                    ) { tab ->
+                        tabStateHolder.SaveableStateProvider(tab) {
+                            Box(Modifier.fillMaxSize()) {
+                                when (tab) {
+                                    0 -> HomeTab(state, settings, viewModel, showToast)
+                                    1 -> KeysTab(settings, state, viewModel, showToast, openBrowser)
+                                    else -> SettingsTab(
+                                        settings, state, viewModel, settings.predictiveBack, showToast,
+                                    )
+                                }
                             }
                         }
                     }

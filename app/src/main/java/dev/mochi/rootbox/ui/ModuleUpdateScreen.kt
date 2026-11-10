@@ -36,7 +36,6 @@ import ui.feice.mochi.basic.MochiDialogAction
 import ui.feice.mochi.basic.MochiDialogActionRole
 import ui.feice.mochi.basic.MochiProgressRing
 import ui.feice.mochi.basic.Text
-import ui.feice.mochi.effect.content.mochiBlur
 import ui.feice.mochi.icons.MochiIonicon
 import ui.feice.mochi.list.MochiListRow
 import ui.feice.mochi.list.mochiListSection
@@ -146,17 +145,16 @@ fun ModuleUpdateScreen(
             }
             ui.items.forEach { item ->
                 row(key = "module-${item.module.id}") {
-                    // 检查中按组件库的方式把整行文字模糊，结束后半径归零（半径为 0 时不建图层）。
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .mochiBlur { if (ui.loading) 4.dp else 0.dp },
-                    ) {
+                    // 不再整块 mochiBlur：只有 MochiListRow 的 value（版本号）用组件库的
+                    // ListBlurText 做模糊替换，标题、标签、按钮、进度保持清晰。
+                    Column(Modifier.fillMaxWidth()) {
                         ModuleUpdateRow(item, checking = ui.loading)
 
                         val progress = ui.downloading[item.module.id]
                         if (progress != null) {
-                            DownloadProgressRow(progress, scheme.onSurfaceVariant)
+                            DownloadProgressRow(progress, scheme.onSurfaceVariant) {
+                                viewModel.cancelModuleDownload(item.module.id)
+                            }
                         } else if (!ui.loading) {
                             val downloaded = ModuleDownloadStore.forModule(ui.files, item.module.id)
                             if (downloaded != null) {
@@ -304,7 +302,11 @@ fun ModuleUpdateScreen(
 
 /** 进度直接画在对应模块的行里，不再单独设「下载中」板块。 */
 @Composable
-private fun DownloadProgressRow(progress: DownloadProgress, secondaryColor: Color) {
+private fun DownloadProgressRow(
+    progress: DownloadProgress,
+    secondaryColor: Color,
+    onCancel: () -> Unit,
+) {
     Column(
         Modifier
             .fillMaxWidth()
@@ -313,7 +315,7 @@ private fun DownloadProgressRow(progress: DownloadProgress, secondaryColor: Colo
         Row(verticalAlignment = Alignment.CenterVertically) {
             MochiProgressRing(progress = progress.fraction, size = 30.dp)
             Spacer(Modifier.width(12.dp))
-            Column {
+            Column(Modifier.weight(1f)) {
                 Text(progress.name, style = MochiTheme.textStyles.bodyMedium)
                 Text(
                     if (progress.total > 0) {
@@ -328,6 +330,11 @@ private fun DownloadProgressRow(progress: DownloadProgress, secondaryColor: Colo
         }
         Spacer(Modifier.height(10.dp))
         MochiProgressBar(progress.fraction)
+        Spacer(Modifier.height(10.dp))
+        MochiButton(
+            onClick = onCancel,
+            style = MochiButtonStyle.Tonal,
+        ) { Text("取消下载") }
     }
 }
 
@@ -341,19 +348,21 @@ private fun ModuleUpdateRow(item: ModuleUpdateItem, checking: Boolean) {
         item.hasUpdate -> "有新版本" to false
         else -> "已是最新" to false
     }
-    // 紧凑副标题：只保留当前/最新版本，来源与错误说明不再铺开。
-    val version = when {
-        checking -> "正在对照更新源…"
-        item.module.updateJson.isNullOrBlank() -> "未提供 updateJson"
-        item.error != null -> item.error
-        else -> buildString {
-            append("当前 ${item.module.version ?: "未知"}")
-            item.latestVersion?.let { append(" → $it") }
-        }
+    // 副标题是本地扫描就能确定的当前版本，检查过程中不需要变、也不该被模糊。
+    val currentVersion = "当前 ${item.module.version ?: "未知"}"
+    // 只有这个 value 会在检查前后改变：MochiListRow 的 value 槽位走组件库的 ListBlurText，
+    // 于是仅此处文字做模糊替换（和首页「已授权 → 检测中」一样），其余内容全程清晰。
+    val valueText = when {
+        checking -> "检测中"
+        item.module.updateJson.isNullOrBlank() -> "无源"
+        item.error != null -> "失败"
+        item.latestVersion != null -> item.latestVersion
+        else -> "最新"
     }
     MochiListRow(
         title = item.module.name,
-        subtitle = version,
+        subtitle = currentVersion,
+        value = valueText,
         destructive = status.second,
         status = {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {

@@ -27,6 +27,7 @@ import dev.mochi.rootbox.core.TrickyStoreScan
 import dev.mochi.rootbox.core.TrickyStoreScanner
 import dev.mochi.rootbox.data.AppSettings
 import dev.mochi.rootbox.data.DarkMode
+import dev.mochi.rootbox.data.DownloadCancelledException
 import dev.mochi.rootbox.data.Http
 import dev.mochi.rootbox.data.InstallPreview
 import dev.mochi.rootbox.data.KeyboxItem
@@ -38,6 +39,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -657,13 +659,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** 下载中的 Job，按模块 id 存；IO 线程会读取消集合，所以用并发容器。 */
+    private val downloadJobs = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Job>()
+
     /** 下载 zip 到 app 私有目录，UI 展示实时进度。 */
     fun downloadModuleUpdate(item: ModuleUpdateItem) {
         val url = item.zipUrl ?: return
         val id = item.module.id
         if (_state.value.moduleUpdates.downloading.containsKey(id)) return
         val fileName = ModuleDownloadStore.safeFileName(id, item.latestVersion)
-        viewModelScope.launch {
+        val job = viewModelScope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             _state.update { state ->
                 state.copy(
                     moduleUpdates = state.moduleUpdates.copy(
@@ -675,17 +680,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
             try {
                 val bytes = Http.getBytes(url) { read, total ->
-                    val fraction = if (total > 0) read.toFloat() / total.toFloat() else 0f
-                    _state.update { state ->
-                        val current = state.moduleUpdates.downloading[id] ?: return@update state
-                        state.copy(
-                            moduleUpdates = state.moduleUpdates.copy(
-                                downloading = state.moduleUpdates.downloading + (
-                                    id to current.copy(read = read, total = total, fraction = fraction)
+                        val fraction = if (total > 0) read.toFloat() / total.toFloat() else 0f
+                        _state.update { state ->
+                            val current = state.moduleUpdates.downloading[id] ?: return@update state
+                            state.copy(
+                                moduleUpdates = state.moduleUpdates.copy(
+                                    downloading = state.moduleUpdates.downloading + (
+                                        id to current.copy(read = read, total = total, fraction = fraction)
+                                    ),
                                 ),
-                            ),
-                        )
+                            )
+                        }
                     }
+                // 取消点与落盘之间再判一次，避免取消瞬间把半成品写进目录。
+                if (kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]?.isActive == false) {
+                    throw DownloadCancelledException()
                 }
                 ModuleDownloadStore.save(getApplication(), fileName, bytes)
                 _state.update { state ->
@@ -695,6 +704,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             files = ModuleDownloadStore.list(getApplication()),
                         ),
                         message = "已下载 $fileName",
+                    )
+                }
+            } catch (t: DownloadCancelledException) {
+                _state.update { state ->
+                    state.copy(
+                        moduleUpdates = state.moduleUpdates.copy(
+                            downloading = state.moduleUpdates.downloading - id,
+                        ),
+                    )
+                }
+            } catch (t: kotlinx.coroutines.CancellationException) {
+                _state.update { state ->
+                    state.copy(
+                        moduleUpdates = state.moduleUpdates.copy(
+                            downloading = state.moduleUpdates.downloading - id,
+                        ),
                     )
                 }
             } catch (t: Throwable) {
@@ -707,7 +732,29 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         message = "下载失败：${t.javaClass.simpleName}: ${t.message}",
                     )
                 }
+            } finally {
+                // 只移除自己：用户取消后立刻重新下载时，旧协程的 finally 不能删掉新 Job。
+                val self = kotlinx.coroutines.currentCoroutineContext().job
+                downloadJobs.remove(id, self)
             }
+        }
+        // LAZY：先把 Job 放进表再启动，保证协程内任何时刻读到的表状态都是完整的。
+        downloadJobs[id] = job
+        job.start()
+    }
+
+    /** 用户点「取消下载」：标记取消并 cancel 协程，让 getBytes 断开连接、不落盘。 */
+    fun cancelModuleDownload(id: String) {
+        if (!downloadJobs.containsKey(id)) return
+        val job = downloadJobs.remove(id)
+        job?.cancel()
+        _state.update { state ->
+            state.copy(
+                moduleUpdates = state.moduleUpdates.copy(
+                    downloading = state.moduleUpdates.downloading - id,
+                ),
+                message = "已取消下载",
+            )
         }
     }
 
