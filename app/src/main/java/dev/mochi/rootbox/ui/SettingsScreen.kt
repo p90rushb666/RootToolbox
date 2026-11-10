@@ -1,12 +1,22 @@
 package dev.mochi.rootbox.ui
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
@@ -15,13 +25,19 @@ import dev.mochi.rootbox.data.AppSettings
 import dev.mochi.rootbox.data.DarkMode
 import dev.mochi.rootbox.data.SeedColors
 import kotlinx.collections.immutable.persistentListOf
+import ui.feice.mochi.basic.MochiButton
 import ui.feice.mochi.basic.MochiChip
 import ui.feice.mochi.basic.MochiChipGroup
+import ui.feice.mochi.basic.MochiIconButton
 import ui.feice.mochi.basic.MochiSegmentedControl
 import ui.feice.mochi.basic.MochiSwitch
+import ui.feice.mochi.basic.MochiTextField
+import ui.feice.mochi.basic.Text
+import ui.feice.mochi.icons.MochiIonicon
 import ui.feice.mochi.list.MochiListRow
 import ui.feice.mochi.list.mochiListSection
 import ui.feice.mochi.navigation.MochiLazyCompactTitleScaffold
+import ui.feice.mochi.theme.MochiTheme
 
 @Composable
 fun SettingsScreen(
@@ -151,6 +167,108 @@ fun SettingsScreen(
                     chevron = true,
                     onClick = onOpenTargets,
                 )
+            }
+            row(key = "keep-backups") {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp, vertical = 12.dp),
+                ) {
+                    Text("保留最近 N 个备份", style = MochiTheme.textStyles.bodyLarge)
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        "批量清理时只保留最新的 N 个 .bak 文件",
+                        style = MochiTheme.textStyles.footnote,
+                        color = MochiTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        MochiIconButton(
+                            onClick = { viewModel.setKeepBackups(settings.keepBackups - 1) },
+                            style = ui.feice.mochi.basic.MochiButtonStyle.Tonal,
+                            size = 36.dp,
+                        ) { MochiIonicon("remove", contentDescription = "减少") }
+                        Text("${settings.keepBackups} 个", style = MochiTheme.textStyles.bodyLarge)
+                        MochiIconButton(
+                            onClick = { viewModel.setKeepBackups(settings.keepBackups + 1) },
+                            style = ui.feice.mochi.basic.MochiButtonStyle.Tonal,
+                            size = 36.dp,
+                        ) { MochiIonicon("add", contentDescription = "增加") }
+                    }
+                }
+            }
+        }
+
+        mochiListSection(
+            key = "security",
+            header = "安全",
+            footer = "开启后，每次真正写入前都要验证一次设备锁屏凭据。",
+        ) {
+            row(key = "credential") {
+                MochiListRow(
+                    title = "写入前校验设备凭据",
+                    subtitle = "使用锁屏 PIN / 图案 / 生物识别",
+                    trailing = { MochiSwitch(settings.requireCredential, { viewModel.setRequireCredential(it) }) },
+                )
+            }
+        }
+
+        mochiListSection(
+            key = "integrity",
+            header = "完整性检测",
+            footer = "Play Integrity 的 token 只能由服务端解码；端点和项目编号留空时，完整性页会显示「无法判定」。",
+        ) {
+            row(key = "endpoint") {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp, vertical = 14.dp),
+                ) {
+                    Text("解码服务端点", style = MochiTheme.textStyles.bodyLarge)
+                    Spacer(Modifier.height(8.dp))
+                    var endpoint by remember(settings.integrityEndpoint) {
+                        mutableStateOf(settings.integrityEndpoint)
+                    }
+                    MochiTextField(
+                        endpoint,
+                        { endpoint = it },
+                        placeholder = "https://your-server.example.com/integrity",
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    MochiButton(
+                        onClick = { viewModel.setIntegrityEndpoint(endpoint) },
+                        style = ui.feice.mochi.basic.MochiButtonStyle.Tonal,
+                    ) { Text("保存端点") }
+                }
+            }
+            row(key = "project") {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp, vertical = 14.dp),
+                ) {
+                    Text("Google Cloud 项目编号", style = MochiTheme.textStyles.bodyLarge)
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        "纯数字，用于 setCloudProjectNumber",
+                        style = MochiTheme.textStyles.footnote,
+                        color = MochiTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    var project by remember(settings.integrityProjectNumber) {
+                        mutableStateOf(settings.integrityProjectNumber)
+                    }
+                    MochiTextField(project, { project = it }, placeholder = "123456789012")
+                    Spacer(Modifier.height(10.dp))
+                    MochiButton(
+                        onClick = { viewModel.setIntegrityProjectNumber(project) },
+                        style = ui.feice.mochi.basic.MochiButtonStyle.Tonal,
+                    ) { Text("保存编号") }
+                }
             }
         }
     }

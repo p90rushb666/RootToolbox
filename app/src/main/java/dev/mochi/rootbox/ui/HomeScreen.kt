@@ -21,6 +21,7 @@ import ui.feice.mochi.theme.MochiTheme
 private const val SourceEnvironment = "home/environment"
 private const val SourceModule = "home/module"
 private const val SourceDiagnostics = "home/diagnostics"
+private const val SourceIntegrity = "home/integrity"
 
 @Composable
 fun HomeScreen(
@@ -29,6 +30,7 @@ fun HomeScreen(
     onOpenEnvironment: () -> Unit,
     onOpenModule: () -> Unit,
     onOpenDiagnostics: () -> Unit,
+    onOpenIntegrity: () -> Unit,
     onOpenAbout: () -> Unit,
 ) {
     val root = state.root
@@ -127,6 +129,18 @@ fun HomeScreen(
                         if (module?.installed == true) MochiListStatusChip("已识别")
                     },
                     onClick = onOpenModule,
+                )
+            }
+        }
+
+        item(key = "integrity-card") {
+            MochiListCard(modifier = Modifier.mochiNavSource(SourceIntegrity, cardCorner, cardColor)) {
+                MochiListRow(
+                    title = "完整性检测",
+                    subtitle = "Play Integrity 实时判定，需要自建解码服务",
+                    chevron = true,
+                    leading = { MochiIonicon("checkmark-circle", style = MochiIconStyle.Filled) },
+                    onClick = onOpenIntegrity,
                 )
             }
         }

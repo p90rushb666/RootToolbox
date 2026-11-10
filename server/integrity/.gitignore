@@ -1,0 +1,8 @@
+# 服务账号凭据绝不入库（根 .gitignore 未被修改，这里追加更严格的排除）
+service-account*.json
+credentials*.json
+*-credentials.json
+.env
+.venv/
+__pycache__/
+*.pyc

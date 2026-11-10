@@ -47,7 +47,8 @@ object TrickyStoreScanner {
         "/data/adb/modules/tricky_store/keybox.xml",
         "/data/adb/modules_update/tricky_store/keybox.xml",
         "/data/adb/modules/teesimulator/keybox.xml",
-        "/data/adb/tricky_store/keybox.xml.bak",
+        // 不再把 *.bak 当成候选：它永远会被下面的过滤掉（曾经是个永不显示的死项），
+        // 备份文件现在由 BackupStore 统一管理。
     ).distinct()
 
     suspend fun scan(): TrickyStoreScan {
@@ -86,7 +87,7 @@ object TrickyStoreScanner {
                 val modified = (parts[3].toLongOrNull() ?: 0L) * 1000L
                 KeyboxCandidate(path, size, modified, originOf(path))
             }
-            .filterNot { it.path.endsWith(".bak") }
+            .filterNot { it.path.contains(".bak") }
             .toList()
 
         val propText = body.substringAfter("MDPROP_START", "").substringBefore("MDPROP_END", "")

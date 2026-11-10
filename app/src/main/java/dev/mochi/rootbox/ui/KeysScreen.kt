@@ -1,5 +1,7 @@
 package dev.mochi.rootbox.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -49,6 +51,7 @@ fun KeysScreen(
     showToast: (String) -> Unit,
     openBrowser: (String) -> Unit,
     showGreenBadge: Boolean = true,
+    onOpenPreview: () -> Unit = {},
 ) {
     LaunchedEffect(Unit) { viewModel.ensureKeysLoaded() }
     val listState = rememberLazyListState()
@@ -57,6 +60,22 @@ fun KeysScreen(
     var selected by remember { mutableStateOf<KeyboxItem?>(null) }
     var lastShown by remember { mutableStateOf<KeyboxItem?>(null) }
     if (selected != null) lastShown = selected
+
+    // 本地导入：选一个 xml，同样先进预览页，不直接写。
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri -> if (uri != null) viewModel.prepareLocalImport(uri) }
+
+    // 预览准备好后跳到预览页（只跳一次，避免重组重复 push）。
+    var previewOpened by remember { mutableStateOf(false) }
+    LaunchedEffect(state.preview) {
+        if (state.preview != null && !previewOpened) {
+            previewOpened = true
+            onOpenPreview()
+        } else if (state.preview == null) {
+            previewOpened = false
+        }
+    }
 
     val allItems = state.allItems
     val usableCount = allItems.count { it.usable }
@@ -76,6 +95,11 @@ fun KeysScreen(
         },
         navigationIcon = navigationIcon,
         actions = {
+            MochiBarIconButton(
+                onClick = { importLauncher.launch(arrayOf("*/*")) },
+                navId = "app.import",
+                contentKey = "import",
+            ) { MochiIonicon("document-attach", contentDescription = "从本地导入 keybox.xml") }
             MochiBarIconButton(
                 // Kept enabled while loading: a disabled bar button dims its content, which would
                 // wash out the progress ring. loadKeys() itself ignores re-entrant calls.
@@ -174,7 +198,7 @@ fun KeysScreen(
                 header = "${source.sourceTitle}（${visibleRows.size}）",
                 footer = when (source.sourceId) {
                     KeyboxRepository.KOWX712_ID -> "该来源的下载接口需要 Cloudflare 人机验证，点击条目会在浏览器中打开。"
-                    else -> "直链下载，替换前会自动备份原文件。"
+                    else -> "点条目先看预览，确认后才写入；替换前会自动备份原文件。"
                 },
             ) {
                 if (source.error != null) {
@@ -224,13 +248,14 @@ fun KeysScreen(
         actions = persistentListOf(
             MochiDialogAction("取消", MochiDialogActionRole.Cancel),
             MochiDialogAction(
-                label = if (dialogItem?.downloadUrl != null) "下载并替换" else "浏览器打开",
+                label = if (dialogItem?.downloadUrl != null) "预览安装" else "浏览器打开",
                 role = MochiDialogActionRole.Primary,
                 onClick = {
                     val target = dialogItem
                     if (target != null) {
                         if (target.downloadUrl != null) {
-                            viewModel.install(target)
+                            // 只下载并生成预览，不写设备；确认动作在预览页完成。
+                            viewModel.prepareInstall(target)
                         } else {
                             openBrowser(target.sourcePageUrl)
                             showToast("已打开浏览器，通过验证后请手动下载")

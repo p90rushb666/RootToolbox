@@ -6,17 +6,17 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.withFrameNanos
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -25,9 +25,12 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import dev.mochi.rootbox.ui.AboutScreen
+import dev.mochi.rootbox.ui.BackupScreen
 import dev.mochi.rootbox.ui.DiagnosticsScreen
 import dev.mochi.rootbox.ui.EnvironmentScreen
 import dev.mochi.rootbox.ui.HomeScreen
+import dev.mochi.rootbox.ui.InstallPreviewScreen
+import dev.mochi.rootbox.ui.IntegrityScreen
 import dev.mochi.rootbox.ui.KeysScreen
 import dev.mochi.rootbox.ui.ModuleScreen
 import dev.mochi.rootbox.ui.SettingsScreen
@@ -43,9 +46,9 @@ import ui.feice.mochi.basic.rememberMochiToastState
 import ui.feice.mochi.effect.overscroll.ProvideMochiOverscroll
 import ui.feice.mochi.icons.MochiIconStyle
 import ui.feice.mochi.icons.MochiIonicon
+import ui.feice.mochi.navigation.LocalMochiBottomBarInset
 import ui.feice.mochi.navigation.MochiBackButton
 import ui.feice.mochi.navigation.MochiNavHost
-import ui.feice.mochi.navigation.LocalMochiBottomBarInset
 import ui.feice.mochi.navigation.rememberMochiNavigator
 import ui.feice.mochi.theme.MochiDefaults
 import ui.feice.mochi.theme.MochiTheme
@@ -58,11 +61,16 @@ private const val RouteTarget = "target"
 private const val RouteDiagnostics = "diagnostics"
 private const val RouteAbout = "about"
 private const val RouteSettings = "settings"
+private const val RouteBackup = "backup"
+private const val RouteIntegrity = "integrity"
+private const val RouteKeys = "keys"
+private const val RoutePreview = "preview"
 
 // 打开式转场（mochiNavSource）的 source key，需与 HomeScreen 卡片上的标记一致。
 private const val SourceEnvironment = "home/environment"
 private const val SourceModule = "home/module"
 private const val SourceDiagnostics = "home/diagnostics"
+private const val SourceIntegrity = "home/integrity"
 
 @Composable
 fun RootToolboxApp(viewModel: AppViewModel) {
@@ -147,7 +155,7 @@ fun RootToolboxApp(viewModel: AppViewModel) {
                     tabStateHolder.SaveableStateProvider(selectedTab.intValue) {
                         Box(Modifier.fillMaxSize()) {
                             when (selectedTab.intValue) {
-                                0 -> HomeTab(state, viewModel, settings.predictiveBack, showToast)
+                                0 -> HomeTab(state, settings, viewModel, showToast)
                                 1 -> KeysTab(settings, state, viewModel, showToast, openBrowser)
                                 else -> SettingsTab(
                                     settings, state, viewModel, settings.predictiveBack, showToast,
@@ -173,12 +181,12 @@ fun RootToolboxApp(viewModel: AppViewModel) {
 @Composable
 private fun HomeTab(
     state: AppState,
+    settings: dev.mochi.rootbox.data.AppSettings,
     viewModel: AppViewModel,
-    predictiveBack: Boolean,
     showToast: (String) -> Unit,
 ) {
     val nav = rememberMochiNavigator(RouteHome)
-    MochiNavHost(nav, Modifier.fillMaxSize(), predictiveBack = predictiveBack) { route ->
+    MochiNavHost(nav, Modifier.fillMaxSize(), predictiveBack = settings.predictiveBack) { route ->
         val back: @Composable () -> Unit = { MochiBackButton(history = ::titleFor) }
         when (route) {
             RouteHome -> HomeScreen(
@@ -187,11 +195,21 @@ private fun HomeTab(
                 onOpenEnvironment = { nav.push(RouteEnvironment, from = SourceEnvironment) },
                 onOpenModule = { nav.push(RouteModule, from = SourceModule) },
                 onOpenDiagnostics = { nav.push(RouteDiagnostics, from = SourceDiagnostics) },
+                onOpenIntegrity = { nav.push(RouteIntegrity, from = SourceIntegrity) },
                 onOpenAbout = { nav.push(RouteAbout) },
             )
 
             RouteEnvironment -> EnvironmentScreen(state, viewModel, back)
-            RouteModule -> ModuleScreen(state, viewModel, { nav.push(RouteTarget) }, back, showToast)
+            RouteModule -> ModuleScreen(
+                state = state,
+                viewModel = viewModel,
+                onOpenTargets = { nav.push(RouteTarget) },
+                onOpenBackups = { nav.push(RouteBackup) },
+                navigationIcon = back,
+                showToast = showToast,
+            )
+            RouteBackup -> BackupScreen(state, viewModel, back, showToast)
+            RouteIntegrity -> IntegrityScreen(state, settings, viewModel, back, showToast)
             RouteTarget -> TargetScreen(state, viewModel, back, showToast)
             RouteDiagnostics -> DiagnosticsScreen(state, viewModel, back, showToast)
             RouteAbout -> AboutScreen(back)
@@ -207,14 +225,29 @@ private fun KeysTab(
     showToast: (String) -> Unit,
     openBrowser: (String) -> Unit,
 ) {
-    KeysScreen(
-        state = state,
-        viewModel = viewModel,
-        navigationIcon = null,
-        showToast = showToast,
-        openBrowser = openBrowser,
-        showGreenBadge = settings.showGreenBadge,
-    )
+    val nav = rememberMochiNavigator(RouteKeys)
+    MochiNavHost(nav, Modifier.fillMaxSize(), predictiveBack = settings.predictiveBack) { route ->
+        val back: @Composable () -> Unit = { MochiBackButton(history = ::titleFor) }
+        when (route) {
+            RoutePreview -> InstallPreviewScreen(
+                state = state,
+                settings = settings,
+                viewModel = viewModel,
+                navigationIcon = back,
+                onDone = { nav.pop() },
+                showToast = showToast,
+            )
+            else -> KeysScreen(
+                state = state,
+                viewModel = viewModel,
+                navigationIcon = null,
+                showToast = showToast,
+                openBrowser = openBrowser,
+                showGreenBadge = settings.showGreenBadge,
+                onOpenPreview = { nav.push(RoutePreview) },
+            )
+        }
+    }
 }
 
 @Composable
@@ -243,5 +276,9 @@ private fun titleFor(route: String): String = when (route) {
     RouteDiagnostics -> "诊断"
     RouteAbout -> "关于"
     RouteSettings -> "设置"
+    RouteBackup -> "备份中心"
+    RouteIntegrity -> "完整性检测"
+    RouteKeys -> "密钥库"
+    RoutePreview -> "安装预览"
     else -> route
 }

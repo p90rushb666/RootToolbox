@@ -1,13 +1,21 @@
 package dev.mochi.rootbox
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.mochi.rootbox.core.BackupEntry
+import dev.mochi.rootbox.core.BackupScan
+import dev.mochi.rootbox.core.BackupStore
 import dev.mochi.rootbox.core.DiagLog
 import dev.mochi.rootbox.core.InstallResult
+import dev.mochi.rootbox.core.IntegrityChecker
+import dev.mochi.rootbox.core.IntegrityOutcome
 import dev.mochi.rootbox.core.KeyboxInstaller
 import dev.mochi.rootbox.core.KeyboxMeta
 import dev.mochi.rootbox.core.KeyboxParser
+import dev.mochi.rootbox.core.ModuleLoadChecker
+import dev.mochi.rootbox.core.ModuleLoadStatus
 import dev.mochi.rootbox.core.RootChecker
 import dev.mochi.rootbox.core.RootInfo
 import dev.mochi.rootbox.core.Shell
@@ -16,15 +24,18 @@ import dev.mochi.rootbox.core.TrickyStoreScanner
 import dev.mochi.rootbox.data.AppSettings
 import dev.mochi.rootbox.data.DarkMode
 import dev.mochi.rootbox.data.Http
+import dev.mochi.rootbox.data.InstallPreview
 import dev.mochi.rootbox.data.KeyboxItem
 import dev.mochi.rootbox.data.KeyboxRepository
 import dev.mochi.rootbox.data.SettingsStore
 import dev.mochi.rootbox.data.SourceResult
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class InstallUi(
     val uid: String,
@@ -51,6 +62,16 @@ data class AppState(
     val showArchived: Boolean = false,
     val install: InstallUi? = null,
     val message: String? = null,
+    /** 阶段 A 产物：预览中就绪但尚未写入。 */
+    val preview: InstallPreview? = null,
+    val previewLoading: Boolean = false,
+    val backups: BackupScan? = null,
+    val backupsLoading: Boolean = false,
+    val moduleLoad: ModuleLoadStatus? = null,
+    val moduleLoadChecking: Boolean = false,
+    val integrity: IntegrityOutcome? = null,
+    val integrityRunning: Boolean = false,
+    val integrityPhase: String = "",
 ) {
     val allItems: List<KeyboxItem> get() = sources.flatMap { it.items }
 }
@@ -58,6 +79,7 @@ data class AppState(
 class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val settingsStore = SettingsStore(application)
+    private val integrityChecker = IntegrityChecker(application)
 
     private val _settings = MutableStateFlow(settingsStore.load())
     val settings: StateFlow<AppSettings> = _settings.asStateFlow()
@@ -65,10 +87,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _state = MutableStateFlow(AppState(showArchived = _settings.value.showArchivedByDefault))
     val state: StateFlow<AppState> = _state.asStateFlow()
 
+    /** 预览阶段下载的字节只存在这里，不落盘、不写日志。 */
+    private var pendingBytes: ByteArray? = null
+
+    /** 最近一次成功写入的 SHA-256，用于模块加载检测的对照。 */
+    private var lastWrittenSha: String? = null
+
     fun start() {
         if (_settings.value.autoCheckRoot) refreshRoot()
         else viewModelScope.launch { prepareWithoutRootProbe() }
-        // 密钥列表推迟到第一次打开「密钥库」标签时再拉，避免和首帧抢资源。
     }
 
     /** 第一次进入密钥库时按需拉取，之后不再重复触发。 */
@@ -77,7 +104,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         loadKeys()
     }
 
-    /** Root detection switched off: still resolve the module state from what is readable. */
     private suspend fun prepareWithoutRootProbe() {
         _state.update { it.copy(rootChecking = false, root = null) }
         scanModule(false)
@@ -87,11 +113,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { refreshAll() }
     }
 
-    /**
-     * Called every time the app returns to the foreground. Re-running root detection keeps the
-     * "可用/受限" badge honest: at a cold start the daemon may not have answered yet, so the first
-     * probe often reads as "受限" until a later refresh sees it granted.
-     */
     fun onAppForeground() {
         if (!_settings.value.autoCheckRoot || !_settings.value.refreshOnOpen) return
         if (_state.value.rootChecking) return
@@ -99,7 +120,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         refreshRoot()
     }
 
-    /** Suspend so pull-to-refresh keeps its indicator until detection really finished. */
     suspend fun refreshAll() {
         _state.update { it.copy(rootChecking = true) }
         val info = RootChecker.detect()
@@ -132,9 +152,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         _state.update { it.copy(scanning = true) }
         val scan = TrickyStoreScanner.scan()
-        // The path the user confirmed last time wins, so the chooser only appears once. A saved path
-        // that no longer exists on the device falls back to the scan result and asks again.
-        // 用户手动选过的路径优先，否则一律用运行时配置目录，首次打开不再询问。
         val saved = _settings.value.savedTarget
         val target = saved
             ?: _state.value.targetPath
@@ -167,7 +184,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun selectTarget(path: String) {
         updateSettings { it.copy(savedTarget = path) }
         _state.update { it.copy(targetPath = path) }
-        viewModelScope.launch { loadCurrentKeybox(path) }
+        viewModelScope.launch {
+            loadCurrentKeybox(path)
+            loadBackups()
+        }
     }
 
     fun loadKeys() {
@@ -175,10 +195,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { refreshKeys() }
     }
 
-    /**
-     * Suspend version used by pull-to-refresh: it returns only after both sources answered, so the
-     * refresh indicator stays until the list is really up to date.
-     */
     suspend fun refreshKeys() {
         if (_state.value.keysLoading) return
         _state.update { it.copy(keysLoading = true, refreshDone = 0, refreshTotal = 2) }
@@ -188,95 +204,231 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(sources = sources, keysLoading = false, keysLoadedOnce = true) }
     }
 
-    fun setDarkMode(mode: DarkMode) = updateSettings { it.copy(darkMode = mode) }
+    // ---------------------------------------------------------------- 安装预览（阶段 A）
 
-    fun setMonet(enabled: Boolean) = updateSettings { it.copy(monet = enabled) }
-
-    fun setKeyColor(color: Long?) = updateSettings { it.copy(keyColor = color) }
-
-    fun setPredictiveBack(enabled: Boolean) = updateSettings { it.copy(predictiveBack = enabled) }
-
-    fun setAutoCheckRoot(enabled: Boolean) = updateSettings { it.copy(autoCheckRoot = enabled) }
-
-    fun setRefreshOnOpen(enabled: Boolean) = updateSettings { it.copy(refreshOnOpen = enabled) }
-
-    fun setShowGreenBadge(enabled: Boolean) = updateSettings { it.copy(showGreenBadge = enabled) }
-
-    fun setShowArchivedDefault(enabled: Boolean) {
-        updateSettings { it.copy(showArchivedByDefault = enabled) }
-        _state.update { it.copy(showArchived = enabled) }
-    }
-
-    private fun updateSettings(transform: (AppSettings) -> AppSettings) {
-        val next = transform(_settings.value)
-        _settings.value = next
-        settingsStore.save(next)
-    }
-
-    fun toggleArchived() {
-        _state.update { it.copy(showArchived = !it.showArchived) }
-    }
-
-    fun install(item: KeyboxItem) {
+    /** 下载 + 解析 + 校验，只读；不产生任何设备写入。 */
+    fun prepareInstall(item: KeyboxItem) {
         val url = item.downloadUrl
         if (url == null) {
             _state.update { it.copy(message = "${item.sourceTitle} 需要人机验证，请用浏览器打开") }
             return
         }
+        if (_state.value.previewLoading || _state.value.install?.running == true) return
         val target = _state.value.targetPath
         if (target.isNullOrBlank()) {
             _state.update { it.copy(message = "尚未确定替换目标，请先在首页选择路径") }
             return
         }
-        if (_state.value.install?.running == true) return
 
         viewModelScope.launch {
             _state.update {
-                it.copy(install = InstallUi(item.uid, item.name, "连接下载地址", 0.01f, running = true))
+                it.copy(
+                    previewLoading = true,
+                    install = InstallUi(item.uid, item.name, "下载中", 0.02f, running = true),
+                )
             }
             try {
                 val bytes = Http.getBytes(url) { read, total ->
-                    val fraction = if (total > 0) (read.toFloat() / total.toFloat()) * 0.45f else 0.01f
+                    val fraction = if (total > 0) (read.toFloat() / total.toFloat()) * 0.9f else 0.02f
                     val label = if (total > 0) {
                         "下载中 ${read / 1024}KB / ${total / 1024}KB"
                     } else {
                         "下载中 ${read / 1024}KB"
                     }
                     _state.update { state ->
-                        state.install?.let { state.copy(install = it.copy(phase = label, fraction = fraction.coerceIn(0.01f, 0.45f))) } ?: state
+                        state.install?.let {
+                            state.copy(install = it.copy(phase = label, fraction = fraction.coerceIn(0.02f, 0.9f)))
+                        } ?: state
                     }
                 }
-                updateInstall("校验 keybox 结构", 0.48f)
-                val meta = KeyboxParser.parse(bytes)
-                if (!meta.valid) {
-                    updateInstall("校验失败：${meta.error}", 0.48f, running = false)
-                    _state.update {
-                        it.copy(
-                            install = it.install?.copy(running = false),
-                            message = "文件无效：${meta.error}",
-                        )
-                    }
-                    return@launch
-                }
-                if (item.sha256 != null && !item.sha256.equals(meta.sha256, ignoreCase = true)) {
-                    updateInstall("SHA-256 与索引不一致", 0.48f, running = false)
-                    _state.update { it.copy(message = "下载内容与来源索引的 SHA-256 不一致，已中止") }
-                    return@launch
-                }
-
-                val result = KeyboxInstaller.install(target, bytes) { progress ->
-                    updateInstall(progress.phase, 0.5f + progress.fraction * 0.5f)
-                }
+                val preview = buildPreview(
+                    bytes = bytes,
+                    origin = item.sourceTitle,
+                    fileName = item.name.ifBlank { "keybox.xml" },
+                    expectedSha256 = item.sha256,
+                    item = item,
+                    target = target,
+                )
+                pendingBytes = bytes.takeIf { preview.canConfirm }
+                _state.update { it.copy(previewLoading = false, install = null, preview = preview) }
+                DiagLog.info("preview", "预览已生成 可确认=${preview.canConfirm} 问题=${preview.issues.size}")
+            } catch (t: Throwable) {
+                DiagLog.error("preview", "下载失败", t)
                 _state.update {
                     it.copy(
-                        install = it.install?.copy(running = false, fraction = 1f, phase = if (result.success) "完成" else result.title, result = result),
+                        previewLoading = false,
+                        install = null,
+                        message = "下载失败：${t.javaClass.simpleName}: ${t.message}",
+                    )
+                }
+            }
+        }
+    }
+
+    /** 本地导入：用户自己选一个 xml 文件，同样先走预览。 */
+    fun prepareLocalImport(uri: Uri) {
+        if (_state.value.previewLoading || _state.value.install?.running == true) return
+        val target = _state.value.targetPath
+        if (target.isNullOrBlank()) {
+            _state.update { it.copy(message = "尚未确定替换目标，请先在首页选择路径") }
+            return
+        }
+        viewModelScope.launch {
+            _state.update { it.copy(previewLoading = true) }
+            try {
+                val bytes = withContext(Dispatchers.IO) {
+                    getApplication<Application>().contentResolver.openInputStream(uri)?.use { stream ->
+                        val buffer = java.io.ByteArrayOutputStream()
+                        val chunk = ByteArray(16 * 1024)
+                        var total = 0
+                        while (true) {
+                            val read = stream.read(chunk)
+                            if (read < 0) break
+                            total += read
+                            if (total > MAX_IMPORT_BYTES) error("文件超过 ${MAX_IMPORT_BYTES / 1024 / 1024}MB")
+                            buffer.write(chunk, 0, read)
+                        }
+                        buffer.toByteArray()
+                    } ?: error("无法读取所选文件")
+                }
+                val name = uri.lastPathSegment?.substringAfterLast('/') ?: "keybox.xml"
+                val preview = buildPreview(
+                    bytes = bytes,
+                    origin = "本地文件",
+                    fileName = name,
+                    expectedSha256 = null,
+                    item = null,
+                    target = target,
+                )
+                pendingBytes = bytes.takeIf { preview.canConfirm }
+                _state.update { it.copy(previewLoading = false, preview = preview) }
+            } catch (t: Throwable) {
+                DiagLog.error("preview", "本地导入失败", t)
+                _state.update {
+                    it.copy(
+                        previewLoading = false,
+                        message = "导入失败：${t.javaClass.simpleName}: ${t.message}",
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * 阶段 A 的可复用前置流程：解析字节 -> 与索引哈希比对 -> 汇总预览与问题清单。
+     * 任何一项不通过都会写进 [InstallPreview.issues]，让 UI 禁止进入确认态。
+     */
+    private suspend fun buildPreview(
+        bytes: ByteArray,
+        origin: String,
+        fileName: String,
+        expectedSha256: String?,
+        item: KeyboxItem?,
+        target: String,
+    ): InstallPreview {
+        val meta = KeyboxParser.parse(bytes)
+        val current = _state.value.currentMeta
+        val currentSha = readCurrentSha(target)
+        val issues = mutableListOf<String>()
+        val warnings = mutableListOf<String>()
+
+        if (bytes.size > MAX_IMPORT_BYTES) issues += "文件过大（${bytes.size / 1024}KB），超出可接受范围。"
+        if (!meta.valid) issues += "结构无效：${meta.error ?: "未知错误"}"
+        if (expectedSha256.isNullOrBlank()) {
+            warnings += "来源未提供校验值，本次只做了结构与证书校验，无法确认下载内容与索引一致。"
+        } else if (!expectedSha256.equals(meta.sha256, ignoreCase = true)) {
+            issues += "SHA-256 与来源索引不一致（索引 ${expectedSha256.take(16)}… / 实际 ${meta.sha256.take(16)}…）。"
+        }
+        if (current != null && current.deviceId != null && meta.deviceId != null &&
+            current.deviceId != meta.deviceId
+        ) {
+            warnings += "DeviceID 将发生变化：${current.deviceId} → ${meta.deviceId}。"
+        }
+        if (current != null && current.sha256.equals(meta.sha256, ignoreCase = true)) {
+            warnings += "内容与设备上现有文件完全一致，替换不会改变任何东西。"
+        }
+        if (currentSha == null) {
+            warnings += "读取不到设备上的当前文件，替换时将新建。"
+        }
+
+        return InstallPreview(
+            origin = origin,
+            fileName = fileName,
+            targetPath = target,
+            meta = meta,
+            expectedSha256 = expectedSha256,
+            indexItem = item,
+            currentMeta = current,
+            currentSha = currentSha,
+            issues = issues,
+            warnings = warnings,
+            sourceItemUid = item?.uid,
+        )
+    }
+
+    private suspend fun readCurrentSha(path: String): String? {
+        if (_state.value.root?.granted != true) return null
+        val result = Shell.su("cat ${quotePath(path)} 2>/dev/null")
+        if (!result.ok || result.out.isEmpty()) return null
+        return KeyboxMeta.sha256Hex(result.out.toByteArray(Charsets.UTF_8))
+    }
+
+    fun cancelPreview() {
+        pendingBytes = null
+        _state.update { it.copy(preview = null) }
+        DiagLog.info("preview", "用户取消了预览，未写入任何内容")
+    }
+
+    /** 阶段 B：用户确认后才真正落盘，仍走 KeyboxInstaller 的备份 -> 写入 -> 校验 -> 回滚。 */
+    fun confirmPreview() {
+        val preview = _state.value.preview ?: return
+        val bytes = pendingBytes
+        if (bytes == null) {
+            _state.update { it.copy(message = "预览内容已失效，请重新选择") }
+            return
+        }
+        if (!preview.canConfirm) {
+            _state.update { it.copy(message = "预览未通过校验，无法写入") }
+            return
+        }
+        if (_state.value.install?.running == true) return
+
+        _state.update { it.copy(preview = null) }
+        viewModelScope.launch {
+            _state.update {
+                it.copy(
+                    install = InstallUi(
+                        uid = preview.sourceItemUid ?: "local",
+                        name = preview.fileName,
+                        phase = "准备写入",
+                        fraction = 0.02f,
+                        running = true,
+                    ),
+                )
+            }
+            try {
+                val result = KeyboxInstaller.install(preview.targetPath, bytes) { progress ->
+                    updateInstall(progress.phase, 0.05f + progress.fraction * 0.85f)
+                }
+                pendingBytes = null
+                if (result.success) lastWrittenSha = result.sha256
+                _state.update {
+                    it.copy(
+                        install = it.install?.copy(
+                            running = false,
+                            fraction = 1f,
+                            phase = if (result.success) "完成" else result.title,
+                            result = result,
+                        ),
                         message = if (result.success) "替换完成" else result.title,
                     )
                 }
                 DiagLog.info("install", "结果 ${result.title}")
                 scanModule(true)
+                loadBackups()
+                checkModuleLoad()
             } catch (t: Throwable) {
-                DiagLog.error("install", "下载/替换异常", t)
+                DiagLog.error("install", "写入异常", t)
                 _state.update {
                     it.copy(
                         install = it.install?.copy(running = false, phase = "失败：${t.message}", result = null),
@@ -298,11 +450,178 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(install = null) }
     }
 
+    // ---------------------------------------------------------------- 备份中心
+
+    fun loadBackups() {
+        if (_state.value.backupsLoading) return
+        viewModelScope.launch { refreshBackups() }
+    }
+
+    suspend fun refreshBackups() {
+        if (_state.value.backupsLoading) return
+        _state.update { it.copy(backupsLoading = true) }
+        val scan = BackupStore.scan(
+            targetPath = _state.value.targetPath,
+            savedTarget = _settings.value.savedTarget,
+            rootAvailable = _state.value.root?.granted == true,
+        )
+        _state.update { it.copy(backups = scan, backupsLoading = false) }
+    }
+
+    fun restoreBackup(entry: BackupEntry) {
+        if (_state.value.install?.running == true) return
+        val target = _state.value.targetPath ?: return
+        viewModelScope.launch {
+            _state.update {
+                it.copy(
+                    install = InstallUi(
+                        uid = entry.path,
+                        name = entry.fileName,
+                        phase = "从备份恢复",
+                        fraction = 0.02f,
+                        running = true,
+                    ),
+                )
+            }
+            val result = BackupStore.restore(target, entry) { progress ->
+                updateInstall(progress.phase, 0.05f + progress.fraction * 0.85f)
+            }
+            if (result.success) lastWrittenSha = result.sha256
+            _state.update {
+                it.copy(
+                    install = it.install?.copy(
+                        running = false,
+                        fraction = 1f,
+                        phase = if (result.success) "恢复完成" else result.title,
+                        result = result,
+                    ),
+                    message = if (result.success) "已从备份恢复" else result.title,
+                )
+            }
+            loadCurrentKeybox(target)
+            refreshBackups()
+            checkModuleLoad()
+        }
+    }
+
+    fun deleteBackups(entries: List<BackupEntry>) {
+        if (entries.isEmpty()) return
+        viewModelScope.launch {
+            val (removed, failures) = BackupStore.delete(entries)
+            refreshBackups()
+            _state.update {
+                it.copy(
+                    message = if (failures.isEmpty()) {
+                        "已删除 $removed 个备份"
+                    } else {
+                        "删除 $removed 个，${failures.size} 个失败：${failures.first()}"
+                    },
+                )
+            }
+        }
+    }
+
+    fun pruneBackups() {
+        val entries = _state.value.backups?.entries.orEmpty()
+        if (entries.isEmpty()) {
+            _state.update { it.copy(message = "没有可清理的备份") }
+            return
+        }
+        val keep = _settings.value.keepBackups
+        viewModelScope.launch {
+            val (removed, kept, failures) = BackupStore.prune(entries, keep)
+            refreshBackups()
+            _state.update {
+                it.copy(
+                    message = if (removed == 0) {
+                        "备份数量未超过 $keep 个，无需清理"
+                    } else if (failures.isEmpty()) {
+                        "已清理 $removed 个，保留最新 $kept 个"
+                    } else {
+                        "清理 $removed 个，${failures.size} 个失败"
+                    },
+                )
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- 模块加载状态
+
+    fun checkModuleLoad() {
+        if (_state.value.moduleLoadChecking) return
+        viewModelScope.launch {
+            _state.update { it.copy(moduleLoadChecking = true) }
+            val status = ModuleLoadChecker.check(lastWrittenSha, _state.value.root)
+            _state.update { it.copy(moduleLoad = status, moduleLoadChecking = false) }
+        }
+    }
+
+    // ---------------------------------------------------------------- 完整性检测
+
+    fun runIntegrityCheck() {
+        if (_state.value.integrityRunning) return
+        viewModelScope.launch {
+            _state.update {
+                it.copy(integrityRunning = true, integrity = null, integrityPhase = "准备中…")
+            }
+            val outcome = integrityChecker.check(
+                endpoint = _settings.value.integrityEndpoint,
+                projectNumber = _settings.value.integrityProjectNumber,
+            ) { phase -> _state.update { it.copy(integrityPhase = phase) } }
+            _state.update { it.copy(integrity = outcome, integrityRunning = false, integrityPhase = "") }
+            DiagLog.info("integrity", if (outcome.ok) "判定已返回" else "失败：${outcome.failure?.kind}")
+        }
+    }
+
+    // ---------------------------------------------------------------- 设置
+
+    fun setDarkMode(mode: DarkMode) = updateSettings { it.copy(darkMode = mode) }
+
+    fun setMonet(enabled: Boolean) = updateSettings { it.copy(monet = enabled) }
+
+    fun setKeyColor(color: Long?) = updateSettings { it.copy(keyColor = color) }
+
+    fun setPredictiveBack(enabled: Boolean) = updateSettings { it.copy(predictiveBack = enabled) }
+
+    fun setAutoCheckRoot(enabled: Boolean) = updateSettings { it.copy(autoCheckRoot = enabled) }
+
+    fun setRefreshOnOpen(enabled: Boolean) = updateSettings { it.copy(refreshOnOpen = enabled) }
+
+    fun setShowGreenBadge(enabled: Boolean) = updateSettings { it.copy(showGreenBadge = enabled) }
+
+    fun setKeepBackups(count: Int) = updateSettings { it.copy(keepBackups = count.coerceIn(1, 50)) }
+
+    fun setRequireCredential(enabled: Boolean) = updateSettings { it.copy(requireCredential = enabled) }
+
+    fun setIntegrityEndpoint(value: String) = updateSettings { it.copy(integrityEndpoint = value.trim()) }
+
+    fun setIntegrityProjectNumber(value: String) =
+        updateSettings { it.copy(integrityProjectNumber = value.trim()) }
+
+    fun setShowArchivedDefault(enabled: Boolean) {
+        updateSettings { it.copy(showArchivedByDefault = enabled) }
+        _state.update { it.copy(showArchived = enabled) }
+    }
+
+    private fun updateSettings(transform: (AppSettings) -> AppSettings) {
+        val next = transform(_settings.value)
+        _settings.value = next
+        settingsStore.save(next)
+    }
+
+    fun toggleArchived() {
+        _state.update { it.copy(showArchived = !it.showArchived) }
+    }
+
     fun consumeMessage() {
         _state.update { it.copy(message = null) }
     }
 
     fun clearLog() = DiagLog.clear()
+
+    private companion object {
+        const val MAX_IMPORT_BYTES = 5 * 1024 * 1024
+    }
 }
 
 /** Quotes a path for the `su -c` shell. */

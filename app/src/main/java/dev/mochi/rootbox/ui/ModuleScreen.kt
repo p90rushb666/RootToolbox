@@ -3,24 +3,34 @@ package dev.mochi.rootbox.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import dev.mochi.rootbox.AppState
 import dev.mochi.rootbox.AppViewModel
+import dev.mochi.rootbox.core.ModuleLoadState
+import ui.feice.mochi.basic.MochiButton
 import ui.feice.mochi.basic.MochiButtonStyle
 import ui.feice.mochi.basic.MochiIconButton
+import ui.feice.mochi.basic.Text
 import ui.feice.mochi.icons.MochiIonicon
 import ui.feice.mochi.list.MochiListButton
 import ui.feice.mochi.list.MochiListRow
+import ui.feice.mochi.list.MochiListStatusChip
 import ui.feice.mochi.list.mochiListSection
 import ui.feice.mochi.navigation.MochiLazyCompactTitleScaffold
+import ui.feice.mochi.theme.MochiTheme
 
 @Composable
 fun ModuleScreen(
     state: AppState,
     viewModel: AppViewModel,
     onOpenTargets: () -> Unit,
+    onOpenBackups: () -> Unit,
     navigationIcon: @Composable () -> Unit,
     showToast: (String) -> Unit,
 ) {
@@ -36,15 +46,73 @@ fun ModuleScreen(
         showToast(label)
     }
 
+    LaunchedEffect(Unit) {
+        // 进入页面时先给一次静态结论；写完 keybox 后安装卡片也会主动刷新。
+        if (state.moduleLoad == null && !state.moduleLoadChecking) viewModel.checkModuleLoad()
+    }
+
     val module = state.scan?.module
     val meta = state.currentMeta
     val candidates = state.scan?.candidates.orEmpty()
+    val load = state.moduleLoad
+    val backupCount = state.backups?.entries?.size
 
     MochiLazyCompactTitleScaffold(
         title = "Tricky Store",
         subtitle = "模块与当前 keybox",
         navigationIcon = navigationIcon,
     ) {
+        mochiListSection(
+            key = "load",
+            header = "加载状态",
+        ) {
+            row(key = "status") {
+                // MochiListRow 的 value 走组件库的 ListBlurText：状态切换时做模糊过渡，
+                // 与首页刷新时「已授权 → 检测中」的表现一致。
+                val statusText = when {
+                    state.moduleLoadChecking -> "检测中"
+                    load?.state == ModuleLoadState.LOADED -> "已加载"
+                    else -> "未加载"
+                }
+                MochiListRow(
+                    title = "加载状态",
+                    subtitle = load?.reasons?.firstOrNull()?.takeIf { !state.moduleLoadChecking },
+                    value = statusText,
+                    status = {
+                        if (!state.moduleLoadChecking && load != null) {
+                            val loaded = load.state == ModuleLoadState.LOADED
+                            MochiListStatusChip(
+                                text = if (loaded) "已加载" else "未加载",
+                                containerColor = if (loaded) {
+                                    MochiTheme.colorScheme.primaryContainer
+                                } else {
+                                    MochiTheme.colorScheme.errorContainer
+                                },
+                                contentColor = if (loaded) {
+                                    MochiTheme.colorScheme.onPrimaryContainer
+                                } else {
+                                    MochiTheme.colorScheme.onErrorContainer
+                                },
+                            )
+                        }
+                    },
+                )
+            }
+            row(key = "recheck") {
+                androidx.compose.foundation.layout.Column(
+                    androidx.compose.ui.Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp, vertical = 12.dp),
+                ) {
+                    MochiButton(
+                        onClick = { viewModel.checkModuleLoad() },
+                        style = MochiButtonStyle.Tonal,
+                        enabled = !state.moduleLoadChecking,
+                    ) { Text(if (state.moduleLoadChecking) "检测中…" else "重新检查") }
+                }
+            }
+        }
+
         mochiListSection(
             key = "module",
             header = "模块",
@@ -71,6 +139,29 @@ fun ModuleScreen(
             }
             row(key = "rescan") {
                 MochiListButton("重新扫描模块", onClick = { viewModel.rescan() })
+            }
+        }
+
+        mochiListSection(
+            key = "backups",
+            header = "备份",
+            footer = "替换 keybox 时留下的 .bak 文件，可预览、恢复或清理。",
+        ) {
+            row(key = "entry") {
+                MochiListRow(
+                    title = "备份中心",
+                    subtitle = when {
+                        state.root?.granted != true -> "需要 Root 权限才能读取 /data/adb"
+                        state.backupsLoading -> "正在扫描…"
+                        backupCount == null -> "点击查看"
+                        backupCount == 0 -> "没有备份文件"
+                        else -> "共 $backupCount 个备份"
+                    },
+                    value = backupCount?.let { "$it" } ?: "查看",
+                    chevron = true,
+                    leading = { MochiIonicon("archive") },
+                    onClick = onOpenBackups,
+                )
             }
         }
 
@@ -149,16 +240,6 @@ fun ModuleScreen(
                             ) { MochiIonicon("copy", contentDescription = "复制 SHA-256") }
                         },
                     )
-                }
-            }
-        }
-
-        if (!state.scan?.warnings.isNullOrEmpty()) {
-            mochiListSection(key = "warnings", header = "扫描提示") {
-                state.scan?.warnings?.forEachIndexed { index, warning ->
-                    row(key = "warn-$index") {
-                        MochiListRow(title = warning)
-                    }
                 }
             }
         }

@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.mochi.rootbox.AppState
 import dev.mochi.rootbox.AppViewModel
+import dev.mochi.rootbox.core.TrickyStoreScanner
 import ui.feice.mochi.basic.MochiButton
 import ui.feice.mochi.basic.MochiTextField
 import ui.feice.mochi.basic.Text
@@ -21,6 +22,7 @@ import ui.feice.mochi.list.MochiListRow
 import ui.feice.mochi.list.mochiListSection
 import ui.feice.mochi.list.rows
 import ui.feice.mochi.navigation.MochiLazyCompactTitleScaffold
+import ui.feice.mochi.theme.MochiTheme
 
 @Composable
 fun TargetScreen(
@@ -51,11 +53,26 @@ fun TargetScreen(
                 }
             } else {
                 rows(candidates, key = { it.path }) { candidate ->
+                    val isDefault = candidate.path == TrickyStoreScanner.PRIMARY_TARGET
                     MochiListRow(
                         title = candidate.path.substringAfterLast('/'),
-                        subtitle = "${candidate.origin}\n${candidate.path}",
+                        subtitle = buildString {
+                            append(candidate.origin)
+                            if (isDefault) append(" · 默认路径")
+                            append('\n')
+                            append(candidate.path)
+                        },
                         value = formatBytes(candidate.size),
                         checked = candidate.path == state.targetPath,
+                        status = {
+                            if (isDefault) {
+                                StatusPill(
+                                    "默认",
+                                    MochiTheme.colorScheme.primaryContainer,
+                                    MochiTheme.colorScheme.onPrimaryContainer,
+                                )
+                            }
+                        },
                         onClick = {
                             viewModel.selectTarget(candidate.path)
                             showToast("已切换到 ${candidate.path}")

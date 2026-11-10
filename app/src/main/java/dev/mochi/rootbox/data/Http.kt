@@ -56,5 +56,47 @@ object Http {
         }
     }
 
+    /**
+     * POSTs [body] as JSON and returns the response text.
+     *
+     * The body is **never** written to the diagnostics log: it carries an encrypted Play Integrity
+     * token and must not be persisted anywhere in the app.
+     */
+    suspend fun postJson(
+        url: String,
+        body: ByteArray,
+        headers: Map<String, String> = emptyMap(),
+        timeoutMs: Int = 30_000,
+    ): String = withContext(Dispatchers.IO) {
+        var connection: HttpURLConnection? = null
+        try {
+            connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15_000
+                readTimeout = timeoutMs
+                doOutput = true
+                instanceFollowRedirects = false
+                setRequestProperty("User-Agent", USER_AGENT)
+                setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                setRequestProperty("Accept", "application/json")
+                headers.forEach { (key, value) -> setRequestProperty(key, value) }
+            }
+            connection.outputStream.use { it.write(body) }
+            val code = connection.responseCode
+            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+            val text = stream?.readBytes()?.toString(Charsets.UTF_8).orEmpty()
+            DiagLog.info("http", "POST ${URL(url).host} -> HTTP $code (${body.size}B 已省略)")
+            if (code !in 200..299) {
+                throw HttpException("HTTP $code ${connection.responseMessage.orEmpty()}".trim() + if (text.isNotBlank()) " | ${text.take(180)}" else "")
+            }
+            text
+        } catch (t: Throwable) {
+            DiagLog.error("http", "POST ${runCatching { URL(url).host }.getOrDefault("?")} 失败: ${t.javaClass.simpleName}: ${t.message}")
+            throw t
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
     class HttpException(message: String) : Exception(message)
 }

@@ -62,6 +62,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-collections-immutable:0.5.2")
 
+    // Play Integrity：客户端只负责取加密 token，解码必须由服务端完成。
+    implementation("com.google.android.play:integrity:1.4.0")
+
     implementation("io.github.feice11:mochi-compose:0.2.0")
     implementation("io.github.feice11:mochi-icons:0.2.0")
 }
