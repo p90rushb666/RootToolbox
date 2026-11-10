@@ -222,15 +222,24 @@ fun StatusPill(
     containerColor: Color,
     contentColor: Color,
     modifier: Modifier = Modifier,
+    /** 紧凑变体：更小的字号与内边距，用于列表密集的模块标签。 */
+    compact: Boolean = false,
 ) {
     Box(
         modifier
             .background(containerColor, MochiCapsule)
-            .padding(horizontal = 8.dp, vertical = 3.dp),
+            .padding(
+                horizontal = if (compact) 6.dp else 8.dp,
+                vertical = if (compact) 1.dp else 3.dp,
+            ),
     ) {
         Text(
             text = text,
-            style = MochiTheme.textStyles.footnote.copy(fontWeight = FontWeight.SemiBold),
+            style = if (compact) {
+                MochiTheme.textStyles.labelSmall.copy(fontWeight = FontWeight.SemiBold)
+            } else {
+                MochiTheme.textStyles.footnote.copy(fontWeight = FontWeight.SemiBold)
+            },
             color = contentColor,
             maxLines = 1,
         )

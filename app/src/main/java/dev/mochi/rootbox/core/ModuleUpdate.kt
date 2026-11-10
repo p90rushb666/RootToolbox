@@ -109,9 +109,21 @@ object ModuleUpdateChecker {
      */
     suspend fun check(modules: List<InstalledModule>): List<ModuleUpdateItem> = withContext(Dispatchers.IO) {
         // 每个模块都要发 1~2 个网络请求，串行会让 N 个模块等 N 倍时间。
-        coroutineScope {
+        val items = coroutineScope {
             modules.map { module -> async { resolve(module) } }.awaitAll()
         }
+        // 有更新的排最前，没有 updateJson / 无法检查的沉到最底。
+        items.sortedWith(
+            compareByDescending<ModuleUpdateItem> { rank(it) }
+                .thenBy { it.module.name.lowercase() },
+        )
+    }
+
+    private fun rank(item: ModuleUpdateItem): Int = when {
+        item.hasUpdate -> 3
+        item.module.updateJson.isNullOrBlank() -> 0
+        item.error != null -> 1
+        else -> 2
     }
 
     private suspend fun resolve(module: InstalledModule): ModuleUpdateItem {
@@ -122,7 +134,6 @@ object ModuleUpdateChecker {
         var jsonVersion: String? = null
         var jsonCode: Long? = null
         var jsonZip: String? = null
-        var jsonChangelog: String? = null
         var jsonError: String? = null
 
         try {
@@ -130,7 +141,6 @@ object ModuleUpdateChecker {
             jsonVersion = json.optString("version").takeIf { it.isNotBlank() }
             jsonCode = json.optString("versionCode").toLongOrNull()
             jsonZip = json.optString("zipUrl").takeIf { it.startsWith("http") }
-            jsonChangelog = json.optString("changelog").takeIf { it.isNotBlank() }
         } catch (t: Throwable) {
             jsonError = "updateJson 读取失败：${t.javaClass.simpleName}: ${t.message}"
             DiagLog.warn("update", "${module.id} updateJson 失败：${t.message}")
@@ -183,13 +193,7 @@ object ModuleUpdateChecker {
             latestVersion = latestVersion,
             latestVersionCode = latestCode,
             zipUrl = zip,
-            changelog = buildString {
-                jsonChangelog?.let { append(it) }
-                if (jsonError != null && sources.isNotEmpty()) {
-                    if (isNotEmpty()) append("\n")
-                    append("提示：$jsonError，已使用 GitHub Release 对照。")
-                }
-            }.takeIf { it.isNotBlank() },
+            changelog = null,
             releaseUrl = releaseUrl,
             source = sources.joinToString(" + ").ifBlank { null },
             hasUpdate = hasUpdate,

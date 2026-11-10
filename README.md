@@ -87,6 +87,8 @@ Play Integrity 返回的是**加密 token**，客户端无法解密，也不能�
 
 扫描每个模块 `module.prop` 里的 `updateJson`（Magisk 模块更新约定），并尝试从该地址或 `zipUrl` 推断 GitHub 仓库、对照最新 Release 的 tag 与 zip 资源。两个来源任一可用即可下载；只有 `versionCode` 变大或版本字符串变化时才提示「有新版本」。
 
+- **不会自动联网**：进入页面不检查，必须点「检查更新」。检查期间先把扫到的模块名摆进列表，并用组件库的 `mochiBlur` 把每行文字模糊，结果返回后一次性替换。
+- **排序**：有更新的模块排最前，未提供 `updateJson` 的模块沉到最底；模块行只显示当前/最新版本与紧凑状态标签，不展示更新说明。
 - 下载的 zip 保存在 app 私有目录 `filesDir/module-updates/`，不写 `/data/adb`，不需要额外权限。
 - 刷写会把安装包复制到 `/data/local/tmp` 后依次尝试 `magisk --install-module` / `ksud module install` / `apd module install`，**不自动重启**；模块通常需重启设备才生效。
 - 删除单个、一键清空、刷写都有二次确认。

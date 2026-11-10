@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -28,6 +27,7 @@ import ui.feice.mochi.basic.MochiDialog
 import ui.feice.mochi.basic.MochiDialogAction
 import ui.feice.mochi.basic.MochiDialogActionRole
 import ui.feice.mochi.basic.Text
+import ui.feice.mochi.effect.content.mochiBlur
 import ui.feice.mochi.icons.MochiIonicon
 import ui.feice.mochi.list.MochiListCard
 import ui.feice.mochi.list.MochiListRow
@@ -46,8 +46,7 @@ fun ModuleUpdateScreen(
     navigationIcon: @Composable () -> Unit,
     showToast: (String) -> Unit,
 ) {
-    LaunchedEffect(Unit) { viewModel.loadModuleUpdates() }
-
+    // 不自动检查：只有用户点「检查更新」才会扫描与联网。
     val ui = state.moduleUpdates
     val scheme = MochiTheme.colorScheme
 
@@ -58,8 +57,8 @@ fun ModuleUpdateScreen(
     MochiLazyCompactTitleScaffold(
         title = "模块更新",
         subtitle = when {
-            ui.loading -> "正在对照更新源…"
-            ui.checkedAt == null -> "尚未检查"
+            ui.loading -> "正在检查…"
+            ui.checkedAt == null -> "点下方按钮手动检查"
             else -> "${ui.items.size} 个模块 · ${formatDateTime(ui.checkedAt)}"
         },
         navigationIcon = navigationIcon,
@@ -67,7 +66,7 @@ fun ModuleUpdateScreen(
         mochiListSection(
             key = "check",
             header = "更新检查",
-            footer = "读取每个模块 module.prop 里的 updateJson，并对照对应仓库的 GitHub Release。",
+            footer = "不会自动联网；点「检查更新」才扫描模块并对照 GitHub Release。",
         ) {
             row(key = "refresh") {
                 Column(
@@ -79,7 +78,7 @@ fun ModuleUpdateScreen(
                         onClick = { viewModel.loadModuleUpdates() },
                         style = MochiButtonStyle.Filled,
                         enabled = !ui.loading,
-                    ) { Text(if (ui.loading) "检查中…" else "重新检查") }
+                    ) { Text(if (ui.loading) "检查中…" else "检查更新") }
                 }
             }
             if (ui.error != null) {
@@ -133,42 +132,34 @@ fun ModuleUpdateScreen(
         mochiListSection(
             key = "modules",
             header = "已安装模块（${ui.items.size}）",
-            footer = if (ui.items.isEmpty() && ui.error == null && !ui.loading) "没有读取到模块更新信息。" else null,
+            footer = "有更新的模块排在最前，未提供 updateJson 的模块排在最后。",
         ) {
             if (ui.items.isEmpty() && !ui.loading) {
                 row(key = "empty") {
                     MochiListRow(
-                        title = if (ui.error != null) "无法列出模块" else "暂无模块",
+                        title = if (ui.error != null) "无法列出模块" else "尚未检查",
                         subtitle = if (ui.error != null) {
-                            "获得 Root 权限后点「重新检查」扫描模块目录。"
+                            "获得 Root 权限后点「检查更新」扫描模块目录。"
                         } else {
-                            "点上方「重新检查」扫描模块目录"
+                            "本页不会自动联网，点「检查更新」开始。"
                         },
                     )
                 }
             }
             ui.items.forEach { item ->
                 row(key = "module-${item.module.id}") {
-                    ModuleUpdateRow(item)
-                }
-                if (!item.changelog.isNullOrBlank()) {
-                    row(key = "log-${item.module.id}") {
-                        MochiListRow(
-                            title = "更新说明",
-                            subtitle = item.changelog.take(300),
-                        )
-                    }
-                }
-                if (item.canDownload) {
-                    row(key = "dl-btn-${item.module.id}") {
-                        Column(
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 18.dp, vertical = 12.dp),
-                        ) {
+                    // 检查中按组件库的方式把整行文字模糊，结束后半径归零（半径为 0 时不建图层）。
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .mochiBlur { if (ui.loading) 4.dp else 0.dp },
+                    ) {
+                        ModuleUpdateRow(item, checking = ui.loading)
+                        if (!ui.loading && item.canDownload) {
                             MochiButton(
                                 onClick = { viewModel.downloadModuleUpdate(item) },
                                 style = MochiButtonStyle.Tonal,
+                                modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp),
                             ) { Text(if (item.hasUpdate) "下载新版本" else "下载当前版本") }
                         }
                     }
@@ -330,29 +321,44 @@ fun ModuleUpdateScreen(
 }
 
 @Composable
-private fun ModuleUpdateRow(item: ModuleUpdateItem) {
+private fun ModuleUpdateRow(item: ModuleUpdateItem, checking: Boolean) {
     val scheme = MochiTheme.colorScheme
     val status = when {
+        checking -> "检查中" to false
+        item.module.updateJson.isNullOrBlank() -> "无更新源" to false
         item.error != null && !item.canDownload -> "无法检查" to true
         item.hasUpdate -> "有新版本" to false
         else -> "已是最新" to false
     }
+    // 紧凑副标题：只保留当前/最新版本，来源与错误说明不再铺开。
+    val version = when {
+        checking -> "正在对照更新源…"
+        item.module.updateJson.isNullOrBlank() -> "未提供 updateJson"
+        item.error != null -> item.error
+        else -> buildString {
+            append("当前 ${item.module.version ?: "未知"}")
+            item.latestVersion?.let { append(" → $it") }
+        }
+    }
     MochiListRow(
         title = item.module.name,
-        subtitle = buildString {
-            append("当前：${item.module.version ?: "未知"}")
-            if (item.module.versionCode != null) append("（${item.module.versionCode}）")
-            item.latestVersion?.let { append("\n最新：$it") }
-            item.source?.let { append("\n来源：$it") }
-            item.error?.let { append("\n$it") }
-        },
+        subtitle = version,
         destructive = status.second,
         status = {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 StatusPill(
-                    status.first,
-                    if (item.hasUpdate) scheme.primaryContainer else scheme.surfaceVariant,
-                    if (item.hasUpdate) scheme.onPrimaryContainer else scheme.onSurfaceVariant,
+                    text = status.first,
+                    containerColor = if (item.hasUpdate && !checking) {
+                        scheme.primaryContainer
+                    } else {
+                        scheme.surfaceVariant
+                    },
+                    contentColor = if (item.hasUpdate && !checking) {
+                        scheme.onPrimaryContainer
+                    } else {
+                        scheme.onSurfaceVariant
+                    },
+                    compact = true,
                 )
             }
         },

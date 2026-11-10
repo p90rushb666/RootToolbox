@@ -611,13 +611,38 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(moduleUpdates = it.moduleUpdates.copy(loading = true, error = null))
         }
         val (modules, scanError) = ModuleUpdateChecker.scan(_state.value.root?.granted == true)
-        val items = if (scanError != null) emptyList() else ModuleUpdateChecker.check(modules)
+        if (scanError != null) {
+            _state.update {
+                it.copy(
+                    moduleUpdates = it.moduleUpdates.copy(
+                        items = emptyList(), loading = false, error = scanError,
+                        files = ModuleDownloadStore.list(getApplication()),
+                    ),
+                )
+            }
+            return
+        }
+        // 先把扫到的模块名摆进列表：对照版本时这些文字会按组件库的方式模糊，
+        // 结束后再一次性替换成结果，用户能看到「每个模块正在被检查」。
+        _state.update {
+            it.copy(
+                moduleUpdates = it.moduleUpdates.copy(
+                    items = modules
+                        .sortedWith(
+                            compareByDescending<dev.mochi.rootbox.core.InstalledModule> {
+                                if (it.updateJson.isNullOrBlank()) 0 else 1
+                            }.thenBy { it.name.lowercase() },
+                        )
+                        .map { ModuleUpdateItem(it) },
+                ),
+            )
+        }
+        val items = ModuleUpdateChecker.check(modules)
         _state.update {
             it.copy(
                 moduleUpdates = it.moduleUpdates.copy(
                     items = items,
                     loading = false,
-                    error = scanError,
                     checkedAt = System.currentTimeMillis(),
                     files = ModuleDownloadStore.list(getApplication()),
                 ),
