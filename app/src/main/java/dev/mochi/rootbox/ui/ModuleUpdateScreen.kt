@@ -1,5 +1,7 @@
 package dev.mochi.rootbox.ui
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,35 +11,41 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import dev.mochi.rootbox.AppState
 import dev.mochi.rootbox.AppViewModel
+import dev.mochi.rootbox.DownloadProgress
 import dev.mochi.rootbox.core.DownloadedModule
+import dev.mochi.rootbox.core.ModuleDownloadStore
 import dev.mochi.rootbox.core.ModuleUpdateItem
+import dev.mochi.rootbox.core.moduleFileUri
 import kotlinx.collections.immutable.persistentListOf
 import ui.feice.mochi.basic.MochiButton
 import ui.feice.mochi.basic.MochiButtonStyle
-import ui.feice.mochi.basic.MochiProgressRing
 import ui.feice.mochi.basic.MochiDialog
 import ui.feice.mochi.basic.MochiDialogAction
 import ui.feice.mochi.basic.MochiDialogActionRole
+import ui.feice.mochi.basic.MochiProgressRing
 import ui.feice.mochi.basic.Text
 import ui.feice.mochi.effect.content.mochiBlur
 import ui.feice.mochi.icons.MochiIonicon
-import ui.feice.mochi.list.MochiListCard
 import ui.feice.mochi.list.MochiListRow
 import ui.feice.mochi.list.mochiListSection
 import ui.feice.mochi.navigation.MochiLazyCompactTitleScaffold
 import ui.feice.mochi.theme.MochiTheme
 
 /**
- * 模块更新检查：扫描 module.prop 的 updateJson，对照 GitHub Release 提示新版本，
- * 下载到 app 私有目录，再由用户确认后交给模块管理器刷写。
+ * 模块更新检查：手动扫描 module.prop 的 updateJson，对照 GitHub Release 提示新版本，
+ * 下载到 app 私有目录；下载完成后可打开或删除安装包。不提供刷写入口。
  */
 @Composable
 fun ModuleUpdateScreen(
@@ -46,13 +54,39 @@ fun ModuleUpdateScreen(
     navigationIcon: @Composable () -> Unit,
     showToast: (String) -> Unit,
 ) {
+    // 只刷新本地临时文件列表；不触发模块扫描，也不联网。
+    LaunchedEffect(Unit) { viewModel.refreshDownloadedFiles() }
+
     // 不自动检查：只有用户点「检查更新」才会扫描与联网。
     val ui = state.moduleUpdates
     val scheme = MochiTheme.colorScheme
+    val context = LocalContext.current
 
-    var pendingFlash by remember { mutableStateOf<DownloadedModule?>(null) }
+    var pendingFile by remember { mutableStateOf<DownloadedModule?>(null) }
     var pendingDelete by remember { mutableStateOf<DownloadedModule?>(null) }
     var confirmClear by remember { mutableStateOf(false) }
+
+    fun openFile(file: DownloadedModule) {
+        val uri = moduleFileUri(context, file)
+        if (uri == null) {
+            showToast("文件不存在或已被删除")
+            return
+        }
+        fun intentFor(mime: String) = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, mime)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching { context.startActivity(intentFor("application/zip")) }
+            .onFailure { first ->
+                if (first is ActivityNotFoundException) {
+                    runCatching { context.startActivity(intentFor("*/*")) }
+                        .onFailure { showToast("没有可打开该安装包的应用") }
+                } else {
+                    showToast("打开失败：${first.message}")
+                }
+            }
+    }
 
     MochiLazyCompactTitleScaffold(
         title = "模块更新",
@@ -93,46 +127,10 @@ fun ModuleUpdateScreen(
             }
         }
 
-        if (ui.downloading.isNotEmpty()) {
-            mochiListSection(key = "progress", header = "下载中") {
-                ui.downloading.forEach { (id, progress) ->
-                    row(key = "dl-$id") {
-                        Column(
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 18.dp, vertical = 14.dp),
-                        ) {
-                            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                                MochiProgressRing(
-                                    progress = progress.fraction,
-                                    size = 34.dp,
-                                )
-                                Spacer(Modifier.width(14.dp))
-                                Column {
-                                    Text(progress.name, style = MochiTheme.textStyles.bodyLarge)
-                                    Text(
-                                        if (progress.total > 0) {
-                                            "${formatBytes(progress.read)} / ${formatBytes(progress.total)} · ${(progress.fraction * 100).toInt()}%"
-                                        } else {
-                                            "${formatBytes(progress.read)} 已下载"
-                                        },
-                                        style = MochiTheme.textStyles.footnote,
-                                        color = scheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.height(12.dp))
-                            MochiProgressBar(progress.fraction)
-                        }
-                    }
-                }
-            }
-        }
-
         mochiListSection(
             key = "modules",
             header = "已安装模块（${ui.items.size}）",
-            footer = "有更新的模块排在最前，未提供 updateJson 的模块排在最后。",
+            footer = "有更新的模块排在最前，未提供 updateJson 的模块排在最后。下载进度显示在各模块自己的行里。",
         ) {
             if (ui.items.isEmpty() && !ui.loading) {
                 row(key = "empty") {
@@ -155,12 +153,37 @@ fun ModuleUpdateScreen(
                             .mochiBlur { if (ui.loading) 4.dp else 0.dp },
                     ) {
                         ModuleUpdateRow(item, checking = ui.loading)
-                        if (!ui.loading && item.canDownload) {
-                            MochiButton(
-                                onClick = { viewModel.downloadModuleUpdate(item) },
-                                style = MochiButtonStyle.Tonal,
-                                modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp),
-                            ) { Text(if (item.hasUpdate) "下载新版本" else "下载当前版本") }
+
+                        val progress = ui.downloading[item.module.id]
+                        if (progress != null) {
+                            DownloadProgressRow(progress, scheme.onSurfaceVariant)
+                        } else if (!ui.loading) {
+                            val downloaded = ModuleDownloadStore.forModule(ui.files, item.module.id)
+                            if (downloaded != null) {
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 18.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    MochiButton(
+                                        onClick = { openFile(downloaded) },
+                                        style = MochiButtonStyle.Tonal,
+                                        modifier = Modifier.weight(1f),
+                                    ) { Text("打开") }
+                                    MochiButton(
+                                        onClick = { pendingDelete = downloaded },
+                                        style = MochiButtonStyle.Tonal,
+                                        modifier = Modifier.weight(1f),
+                                    ) { Text("删除") }
+                                }
+                            } else if (item.canDownload) {
+                                MochiButton(
+                                    onClick = { viewModel.downloadModuleUpdate(item) },
+                                    style = MochiButtonStyle.Tonal,
+                                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp),
+                                ) { Text(if (item.hasUpdate) "下载新版本" else "下载当前版本") }
+                            }
                         }
                     }
                 }
@@ -185,7 +208,7 @@ fun ModuleUpdateScreen(
                         value = "管理",
                         chevron = true,
                         leading = { MochiIonicon("archive") },
-                        onClick = { pendingFlash = file },
+                        onClick = { pendingFile = file },
                     )
                 }
             }
@@ -204,81 +227,40 @@ fun ModuleUpdateScreen(
                 }
             }
         }
-
-        ui.flashResult?.let { (ok, detail) ->
-            item(key = "flash-result") {
-                MochiListCard {
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 18.dp, vertical = 16.dp),
-                    ) {
-                        Text(
-                            if (ok) "刷写命令已执行" else "刷写失败",
-                            style = MochiTheme.textStyles.bodyLarge,
-                            color = if (ok) scheme.primary else scheme.error,
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            detail,
-                            style = MochiTheme.textStyles.bodyMedium,
-                            color = scheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.height(12.dp))
-                        MochiButton(
-                            onClick = { viewModel.dismissFlashResult() },
-                            style = MochiButtonStyle.Tonal,
-                        ) { Text("关闭") }
-                    }
-                }
-            }
-        }
     }
 
-    // 管理入口：刷写 / 删除，二选一，都要求二次确认。
+    // 临时文件管理：只有打开与删除，没有任何刷写入口。
     MochiDialog(
-        visible = pendingFlash != null,
-        onDismissRequest = { pendingFlash = null },
-        title = "管理已下载的模块",
-        message = pendingFlash?.let { file ->
-            buildString {
-                appendLine(file.name)
-                appendLine("路径：${file.path}")
-                appendLine()
-                appendLine("「刷写」会把安装包交给设备上的模块管理器（Magisk / KernelSU / APatch），并修改 /data/adb/modules；模块通常需要重启设备才会生效，本应用不会自动重启。")
-                append("「删除文件」只删除本应用私有目录里的安装包，不改动系统。")
-            }
+        visible = pendingFile != null,
+        onDismissRequest = { pendingFile = null },
+        title = "已下载的安装包",
+        message = pendingFile?.let { file ->
+            "${file.name}\n${formatBytes(file.size)} · ${formatDateTime(file.modifiedAt)}\n\n路径：${file.path}"
         },
         actions = persistentListOf(
             MochiDialogAction("取消", MochiDialogActionRole.Cancel),
             MochiDialogAction(
-                label = "删除文件",
+                label = "删除",
                 role = MochiDialogActionRole.Destructive,
                 onClick = {
-                    val file = pendingFlash
-                    pendingFlash = null
+                    val file = pendingFile
+                    pendingFile = null
                     if (file != null) pendingDelete = file
                 },
             ),
             MochiDialogAction(
-                label = "刷写模块",
+                label = "打开",
                 role = MochiDialogActionRole.Primary,
                 onClick = {
-                    val file = pendingFlash
-                    pendingFlash = null
-                    if (file != null) {
-                        if (state.root?.granted != true) {
-                            showToast("需要 Root 权限才能刷写模块")
-                        } else {
-                            viewModel.flashModule(file)
-                        }
-                    }
+                    val file = pendingFile
+                    pendingFile = null
+                    if (file != null) openFile(file)
                 },
             ),
         ),
     )
 
-    // 单文件删除二次确认（二级菜单）
+    // 删除二次确认
     MochiDialog(
         visible = pendingDelete != null,
         onDismissRequest = { pendingDelete = null },
@@ -300,7 +282,7 @@ fun ModuleUpdateScreen(
         ),
     )
 
-    // 一键清空二次确认（二级菜单）
+    // 一键清空二次确认
     MochiDialog(
         visible = confirmClear,
         onDismissRequest = { confirmClear = false },
@@ -318,6 +300,35 @@ fun ModuleUpdateScreen(
             ),
         ),
     )
+}
+
+/** 进度直接画在对应模块的行里，不再单独设「下载中」板块。 */
+@Composable
+private fun DownloadProgressRow(progress: DownloadProgress, secondaryColor: Color) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            MochiProgressRing(progress = progress.fraction, size = 30.dp)
+            Spacer(Modifier.width(12.dp))
+            Column {
+                Text(progress.name, style = MochiTheme.textStyles.bodyMedium)
+                Text(
+                    if (progress.total > 0) {
+                        "${formatBytes(progress.read)} / ${formatBytes(progress.total)} · ${(progress.fraction * 100).toInt()}%"
+                    } else {
+                        "${formatBytes(progress.read)} 已下载"
+                    },
+                    style = MochiTheme.textStyles.footnote,
+                    color = secondaryColor,
+                )
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        MochiProgressBar(progress.fraction)
+    }
 }
 
 @Composable

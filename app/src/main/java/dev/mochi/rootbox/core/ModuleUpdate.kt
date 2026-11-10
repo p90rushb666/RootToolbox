@@ -37,7 +37,7 @@ data class ModuleUpdateItem(
     val canDownload: Boolean get() = zipUrl != null && error == null
 }
 
-/** app 私有目录里已下载、尚未刷写的模块 zip。 */
+/** app 私有目录里已下载的模块 zip。 */
 data class DownloadedModule(
     val name: String,
     val path: String,
@@ -257,44 +257,23 @@ object ModuleDownloadStore {
 
     fun safeFileName(moduleId: String, version: String?): String =
         "${moduleId.replace(Regex("""[^A-Za-z0-9._-]"""), "_")}-${version ?: "latest"}.zip"
+
+    /** 找出某个模块最近一次下载的 zip（文件名按 `<模块id>-<版本>.zip` 生成）。 */
+    fun forModule(files: List<DownloadedModule>, moduleId: String): DownloadedModule? {
+        val prefix = moduleId.replace(Regex("""[^A-Za-z0-9._-]"""), "_") + "-"
+        return files.firstOrNull { it.name.startsWith(prefix) }
+    }
 }
 
 /**
- * 把已下载的 zip 交给设备上的模块管理器刷写。
- *
- * 只执行安装命令、**不自动重启**；生效需要用户自己重启。zip 先复制到 /data/local/tmp，
- * 因为部分模块的 daemon 读不到 app 私有目录。
+ * 生成「打开」用的 content Uri：zip 在 app 私有目录，必须经 FileProvider 临时授权给外部应用。
+ * 返回 null 表示文件已不存在。
  */
-object ModuleFlasher {
-
-    suspend fun flash(path: String): Pair<Boolean, String> {
-        val tmp = "/data/local/tmp/rootbox-module-update.zip"
-        val copy = Shell.su("cp ${shQuote(path)} $tmp && chmod 644 $tmp && echo OK")
-        if (!copy.ok || !copy.out.contains("OK")) {
-            return false to "无法把安装包复制到 /data/local/tmp：${copy.brief()}"
-        }
-        val result = Shell.su(
-            """
-            if command -v magisk >/dev/null 2>&1; then
-              magisk --install-module "$tmp"
-            elif command -v ksud >/dev/null 2>&1; then
-              ksud module install "$tmp"
-            elif command -v apd >/dev/null 2>&1; then
-              apd module install "$tmp"
-            else
-              echo "未找到受支持的模块安装命令（magisk / ksud / apd）"
-              exit 1
-            fi
-            """.trimIndent(),
-            timeoutMs = 120_000,
+fun moduleFileUri(context: Context, file: DownloadedModule): android.net.Uri? =
+    runCatching {
+        androidx.core.content.FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            File(file.path),
         )
-        Shell.su("rm -f $tmp")
-        DiagLog.info("update", "模块刷写 ${if (result.ok) "成功" else "失败"}：${result.brief()}")
-        return result.ok to buildString {
-            append(result.out.trim().take(600).ifBlank { result.brief() })
-            if (result.ok) {
-                append("\n\n安装命令已执行。模块通常需要重启设备才会生效；本应用不会自动重启。")
-            }
-        }
-    }
-}
+    }.getOrNull()

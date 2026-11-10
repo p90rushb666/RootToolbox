@@ -14,7 +14,6 @@ import dev.mochi.rootbox.core.IntegrityOutcome
 import dev.mochi.rootbox.core.KeyboxInstaller
 import dev.mochi.rootbox.core.KeyboxMeta
 import dev.mochi.rootbox.core.KeyboxParser
-import dev.mochi.rootbox.core.ModuleFlasher
 import dev.mochi.rootbox.core.ModuleLoadChecker
 import dev.mochi.rootbox.core.ModuleLoadStatus
 import dev.mochi.rootbox.core.ModuleUpdateChecker
@@ -60,8 +59,6 @@ data class ModuleUpdateUi(
     val files: List<DownloadedModule> = emptyList(),
     /** 正在下载的模块 id -> 进度。 */
     val downloading: Map<String, DownloadProgress> = emptyMap(),
-    val flashing: String? = null,
-    val flashResult: Pair<Boolean, String>? = null,
 )
 
 data class DownloadProgress(
@@ -601,6 +598,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     // ---------------------------------------------------------------- 模块更新检查
 
+    /** 只列本地已下载的 zip：不联网、不扫描模块，进入页面时刷新即可。 */
+    fun refreshDownloadedFiles() {
+        viewModelScope.launch {
+            val files = withContext(Dispatchers.IO) { ModuleDownloadStore.list(getApplication()) }
+            _state.update { state ->
+                state.copy(moduleUpdates = state.moduleUpdates.copy(files = files))
+            }
+        }
+    }
+
     fun loadModuleUpdates() {
         if (_state.value.moduleUpdates.loading) return
         viewModelScope.launch { checkModuleUpdates() }
@@ -729,33 +736,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     message = "已清空 $count 个临时文件",
                 )
             }
-        }
-    }
-
-    /** 刷写只在 UI 二次确认之后调用；不自动重启。 */
-    fun flashModule(file: DownloadedModule) {
-        if (_state.value.moduleUpdates.flashing != null) return
-        viewModelScope.launch {
-            _state.update { state ->
-                state.copy(
-                    moduleUpdates = state.moduleUpdates.copy(flashing = file.name, flashResult = null),
-                )
-            }
-            val result = ModuleFlasher.flash(file.path)
-            _state.update { state ->
-                state.copy(
-                    moduleUpdates = state.moduleUpdates.copy(
-                        flashing = null,
-                        flashResult = result,
-                    ),
-                )
-            }
-        }
-    }
-
-    fun dismissFlashResult() {
-        _state.update { state ->
-            state.copy(moduleUpdates = state.moduleUpdates.copy(flashResult = null))
         }
     }
 

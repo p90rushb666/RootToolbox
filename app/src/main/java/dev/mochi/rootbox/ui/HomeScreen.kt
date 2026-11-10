@@ -169,7 +169,7 @@ fun HomeScreen(
                 HomeGridCard(
                     modifier = Modifier.weight(1f),
                     title = "模块更新",
-                    summary = "检查新版本、下载与刷写",
+                    summary = "检查新版本、下载与管理",
                     icon = "cloud-download",
                     iconContainer = scheme.primaryContainer,
                     iconContent = scheme.onPrimaryContainer,
