@@ -2,6 +2,8 @@ package dev.mochi.rootbox.ui
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -9,9 +11,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -19,15 +24,12 @@ import dev.mochi.rootbox.AppState
 import dev.mochi.rootbox.AppViewModel
 import dev.mochi.rootbox.core.AttestationChecker
 import dev.mochi.rootbox.core.AttestationResult
-import dev.mochi.rootbox.core.AttestationVerdict
+import dev.mochi.rootbox.core.BootTone
+import dev.mochi.rootbox.core.RootKind
 import dev.mochi.rootbox.data.AppSettings
 import ui.feice.mochi.basic.MochiActivityIndicator
-import ui.feice.mochi.basic.MochiButton
-import ui.feice.mochi.basic.MochiButtonStyle
 import ui.feice.mochi.basic.Text
-import ui.feice.mochi.icons.MochiIconStyle
 import ui.feice.mochi.icons.MochiIonicon
-import ui.feice.mochi.list.MochiListCard
 import ui.feice.mochi.list.MochiListRow
 import ui.feice.mochi.list.mochiListSection
 import ui.feice.mochi.navigation.LocalMochiBottomBarInset
@@ -37,8 +39,10 @@ import ui.feice.mochi.theme.MochiTheme
 private const val KEY_ATTESTATION_PROJECT = "https://github.com/vvb2060/KeyAttestation"
 
 /**
- * 密钥认证（官方 Android Keystore 认证）：生成一次性密钥、校验证书链到 Google 认证根、
- * 核对吊销列表与认证质询。无需 Root；冷启动自动检测一次，之后只能手动点「重新检测」。
+ * 密钥认证：取设备自己的 Google 认证密钥（AndroidKeyStore + attestation），
+ * 顶部显示根证书等级（例如「谷歌远程密钥配置」），下面显示引导加载程序是否锁定。
+ *
+ * 不读取 keybox.xml、不需要 Root；证书链与吊销状态都是软件层校验，其中吊销列表需要联网。
  */
 @Composable
 fun AttestationScreen(
@@ -63,199 +67,185 @@ fun AttestationScreen(
         },
         navigationIcon = navigationIcon,
     ) {
-        item(key = "hero") {
-            MochiListCard {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 18.dp, vertical = 18.dp),
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        val valid = result?.verdict == AttestationVerdict.VALID
-                        MochiIonicon(
-                            when {
-                                running -> "sync"
-                                valid -> "shield-checkmark"
-                                else -> "alert-circle"
-                            },
-                            style = MochiIconStyle.Filled,
-                            tint = when {
-                                running -> scheme.onSurfaceVariant
-                                valid -> scheme.primary
-                                else -> scheme.error
-                            },
-                            modifier = Modifier.size(34.dp),
-                        )
-                        Spacer(Modifier.size(14.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                when {
-                                    running -> "检测中"
-                                    result == null -> "未检测"
-                                    else -> result.title
-                                },
-                                style = MochiTheme.textStyles.titleLarge,
-                                color = when {
-                                    running -> scheme.onSurface
-                                    result == null -> scheme.onSurfaceVariant
-                                    result.valid -> scheme.primary
-                                    else -> scheme.error
-                                },
-                            )
-                            Text(
-                                when {
-                                    running -> "正在生成密钥并校验证书链，请稍候…"
-                                    result == null -> "点下方按钮开始检测；本页不会自动联网。"
-                                    else -> result.reason
-                                },
-                                style = MochiTheme.textStyles.bodySmall,
-                                color = scheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 4.dp),
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(16.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        MochiButton(
-                            onClick = { viewModel.runAttestation() },
-                            style = MochiButtonStyle.Filled,
-                            enabled = !running,
-                            modifier = Modifier.weight(1f),
-                        ) { Text(if (running) "检测中…" else if (result == null) "检测" else "重新检测") }
-                        if (running) {
-                            Spacer(Modifier.size(14.dp))
-                            MochiActivityIndicator(size = 24.dp)
-                        }
-                    }
-                }
+        if (result == null) {
+            item(key = "loading") {
+                MochiStatusCard(
+                    icon = if (running) "sync" else "shield-checkmark",
+                    title = if (running) "检测中" else "未检测",
+                    summary = if (running) {
+                        "正在生成一次性密钥并校验证书链，请稍候…"
+                    } else {
+                        "重新打开应用或回到首页点「检测」开始。"
+                    },
+                    container = scheme.surfaceContainer,
+                    content = scheme.onSurfaceVariant,
+                    trailing = if (running) {
+                        { MochiActivityIndicator(size = 22.dp) }
+                    } else null,
+                )
             }
         }
 
-        if (showDetails && result != null) {
-            if (result.certs.isNotEmpty()) {
+        if (result != null) {
+            // 顶部第一块：根证书等级，文字与参考实现一致（谷歌远程密钥配置 / 谷歌硬件认证根证书 …）。
+            item(key = "grade") {
+                val tone = gradeTone(result, scheme)
+                MochiStatusCard(
+                    icon = when (result.rootKind) {
+                        RootKind.GOOGLE, RootKind.GOOGLE_RKP -> "shield-checkmark"
+                        RootKind.AOSP -> "warning"
+                        RootKind.KNOX, RootKind.OEM -> "alert-circle"
+                        else -> "alert-circle"
+                    },
+                    title = result.grade,
+                    summary = result.gradeSummary,
+                    container = tone.first,
+                    content = tone.second,
+                )
+            }
+
+            // 紧接着的第二块：引导加载程序是否锁定。
+            item(key = "boot") {
+                val tone = when (result.bootTone) {
+                    BootTone.SAFE -> scheme.primaryContainer to scheme.onPrimaryContainer
+                    BootTone.WARN -> scheme.tertiaryContainer to scheme.onTertiaryContainer
+                    BootTone.NEUTRAL -> scheme.surfaceContainer to scheme.onSurfaceVariant
+                }
+                MochiStatusCard(
+                    icon = when (result.bootTone) {
+                        BootTone.SAFE -> "lock-closed"
+                        BootTone.WARN -> "lock-open"
+                        BootTone.NEUTRAL -> "lock-open"
+                    },
+                    title = result.bootTitle,
+                    summary = result.bootSummary,
+                    container = tone.first,
+                    content = tone.second,
+                )
+            }
+
+            if (result.error != null) {
+                mochiListSection(key = "error", header = "结论") {
+                    row(key = "error-value") {
+                        MochiListRow(
+                            title = "无法确认为有效密钥",
+                            subtitle = result.error,
+                            destructive = true,
+                            leading = { MochiIonicon("alert-circle") },
+                        )
+                    }
+                }
+            }
+
+            if (showDetails && result.certs.isNotEmpty()) {
                 mochiListSection(
                     key = "chain",
-                    header = "证书链（${result.certs.size}）",
-                    footer = "从叶证书到根证书逐级校验签名；根证书必须与 Google 认证根一致。",
+                    header = "证书链",
+                    footer = "从该密钥的证书开始，每个证书均由链中下一个证书签名，到根证书为止。",
                 ) {
                     result.certs.forEach { cert ->
                         row(key = "cert-${cert.index}") {
                             Column(
                                 Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 18.dp, vertical = 12.dp),
+                                    .padding(horizontal = 18.dp, vertical = 14.dp),
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        "#${cert.index + 1} ${if (cert.index == 0) "叶证书" else if (cert.index == result.certs.lastIndex) "根证书" else "中间证书"}",
-                                        style = MochiTheme.textStyles.bodyLarge,
-                                    )
-                                    Spacer(Modifier.weight(1f))
-                                    Text(
-                                        cert.algorithm,
-                                        style = MochiTheme.textStyles.footnote,
-                                        color = scheme.onSurfaceVariant,
-                                    )
-                                }
-                                Text(
-                                    "主题：${cert.subject}",
-                                    style = MochiTheme.textStyles.footnote,
-                                    color = scheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(top = 4.dp),
-                                )
-                                Text(
-                                    "签发：${cert.issuer}",
-                                    style = MochiTheme.textStyles.footnote,
-                                    color = scheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(top = 2.dp),
-                                )
-                                Text(
-                                    "有效期：${AttestationChecker.formatTime(cert.notBefore)} → ${AttestationChecker.formatTime(cert.notAfter)}",
-                                    style = MochiTheme.textStyles.footnote,
-                                    color = scheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(top = 2.dp),
-                                )
-                                Text(
-                                    "序列号：${cert.serial}",
-                                    style = MochiTheme.textStyles.footnote.copy(fontFamily = FontFamily.Monospace),
-                                    color = scheme.onSurfaceVariant,
-                                    softWrap = true,
-                                    modifier = Modifier.padding(top = 2.dp),
+                                CertLine("使用者", cert.subject)
+                                CertLine("不早于", AttestationChecker.formatTime(cert.notBefore))
+                                CertLine("不晚于", AttestationChecker.formatTime(cert.notAfter))
+                                CertLine("序列号", cert.serial, monospace = true)
+                                CertLine(
+                                    "有效性",
+                                    if (cert.valid) "有效" else "无效 - ${cert.problems.joinToString("; ")}",
+                                    color = if (cert.valid) scheme.onSurfaceVariant else scheme.error,
                                 )
                             }
                         }
                     }
                 }
-            }
 
-            mochiListSection(
-                key = "details",
-                header = "认证明细",
-                footer = "明细来自证书里的 KeyDescription 扩展；引导状态与补丁级别只作参考，不改变上面的有效/无效结论。",
-            ) {
-                row(key = "tee") {
-                    val hardware = result.securityLevel == "TEE" || result.securityLevel == "StrongBox"
-                    MochiListRow(
-                        title = "可信执行环境",
-                        subtitle = result.securityLevel ?: "证书里没有可用的安全级别",
-                        value = when {
-                            result.securityLevel == null -> "未知"
-                            hardware -> "硬件级"
-                            else -> "软件级"
-                        },
-                        destructive = result.securityLevel != null && !hardware,
-                    )
-                }
-                row(key = "boot") {
-                    MochiListRow(
-                        title = "引导加载程序",
-                        subtitle = "来自 RootOfTrust.verifiedBootState",
-                        value = result.bootState ?: "未知",
-                        destructive = result.bootStateWarn,
-                    )
-                }
-                row(key = "os") {
-                    MochiListRow("系统版本", value = result.osVersion ?: "未知")
-                }
-                row(key = "patch") {
-                    MochiListRow("安全补丁", value = result.patchLevel ?: "未知")
-                }
-                row(key = "device") {
-                    MochiListRow(
-                        "设备",
-                        subtitle = result.fingerprint,
-                        value = listOfNotNull(result.brand, result.model).joinToString(" ").ifBlank { "未知" },
-                    )
-                }
-                row(key = "root") {
-                    MochiListRow(
-                        title = "信任根",
-                        subtitle = "证书链最终锚点",
-                        value = result.trustRoot ?: "未通过",
-                        destructive = result.verdict != AttestationVerdict.VALID,
-                    )
-                }
-                row(key = "challenge") {
-                    MochiListRow(
-                        title = "认证质询",
-                        subtitle = "每次检测生成新的随机数，防止证书重放",
-                        value = result.challengeTime?.let { AttestationChecker.formatTime(it) } ?: "—",
-                    )
-                }
-                result.revocation?.let { reason ->
-                    row(key = "revoked") {
+                mochiListSection(key = "tee", header = "可信执行环境") {
+                    row(key = "tee-value") {
                         MochiListRow(
-                            title = "吊销状态",
-                            subtitle = reason,
-                            value = "已吊销",
-                            destructive = true,
+                            title = "可信执行环境",
+                            value = result.teeStatus ?: "未知",
+                            destructive = result.teeStatus?.startsWith("异常") == true,
+                        )
+                    }
+                }
+
+                mochiListSection(key = "fingerprint", header = "构建指纹") {
+                    row(key = "fingerprint-value") {
+                        WrappedValueRow("构建指纹", result.fingerprint)
+                    }
+                }
+
+                mochiListSection(key = "trust-root", header = "信任根") {
+                    row(key = "boot-key") {
+                        WrappedValueRow(
+                            "VerifiedBootKey",
+                            result.verifiedBootKey ?: "—",
+                            monospace = true,
+                        )
+                    }
+                    row(key = "boot-hash") {
+                        WrappedValueRow(
+                            "VerifiedBootHash",
+                            result.verifiedBootHash ?: "—",
+                            monospace = true,
+                        )
+                    }
+                    row(key = "boot-state") {
+                        MochiListRow(
+                            title = "VerifiedBootState",
+                            value = result.verifiedBootState ?: "未知",
+                        )
+                    }
+                    row(key = "device-locked") {
+                        MochiListRow(
+                            title = "deviceLocked",
+                            value = result.deviceLocked?.toString() ?: "未知",
+                        )
+                    }
+                }
+
+                mochiListSection(key = "challenge", header = "认证质询") {
+                    row(key = "challenge-value") {
+                        WrappedValueRow("认证质询", result.challenge ?: "—")
+                    }
+                }
+
+                mochiListSection(
+                    key = "revocation",
+                    header = "吊销状态",
+                    footer = "联网比对 Google 官方吊销列表（android.googleapis.com/attestation/status）；网络不可用时使用内置快照，并在结论里标明。",
+                ) {
+                    row(key = "revocation-value") {
+                        MochiListRow(
+                            title = "证书吊销校验",
+                            subtitle = result.revocation ?: "未校验",
+                            value = when {
+                                result.revocation == null -> "未知"
+                                result.revocation.contains("已吊销") -> "已吊销"
+                                result.revocation.startsWith("无法") -> "未知"
+                                else -> "通过"
+                            },
+                            destructive = result.revocation?.contains("已吊销") == true,
                         )
                     }
                 }
             }
+
         }
 
         mochiListSection(key = "credit", header = "来源") {
+            row(key = "note") {
+                MochiListRow(
+                    title = "检测在本机完成",
+                    subtitle = "不读取 keybox.xml、不需要 Root；证书不上传，仅联网核对吊销列表。",
+                )
+            }
+            // 开源署名放在页面最底部，符合参考项目的要求。
             row(key = "project") {
                 MochiListRow(
                     title = "KeyAttestation",
@@ -273,16 +263,112 @@ fun AttestationScreen(
                     },
                 )
             }
-            row(key = "note") {
-                MochiListRow(
-                    title = "检测在本机完成",
-                    subtitle = "不上传证书、不使用网络；吊销列表为内置快照。",
-                )
-            }
         }
 
         item(key = "bottom-space") {
             Spacer(Modifier.height(LocalMochiBottomBarInset.current + 24.dp))
         }
+    }
+}
+
+private fun gradeTone(
+    result: AttestationResult,
+    scheme: ui.feice.mochi.theme.MochiColorScheme,
+): Pair<Color, Color> = when {
+    result.error != null && result.grade == "无法认证" -> scheme.errorContainer to scheme.onErrorContainer
+    result.rootKind == RootKind.GOOGLE || result.rootKind == RootKind.GOOGLE_RKP ->
+        scheme.primaryContainer to scheme.onPrimaryContainer
+    result.rootKind == RootKind.UNKNOWN || result.rootKind == RootKind.FAILED ->
+        scheme.tertiaryContainer to scheme.onTertiaryContainer
+    else -> scheme.tertiaryContainer to scheme.onTertiaryContainer
+}
+
+/** 顶部整块状态卡：大图标 + 标题 + 说明，对齐参考应用的样式。 */
+@Composable
+private fun MochiStatusCard(
+    icon: String,
+    title: String,
+    summary: String?,
+    container: Color,
+    content: Color,
+    trailing: (@Composable () -> Unit)? = null,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(container)
+            .padding(horizontal = 16.dp, vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        MochiIonicon(icon, tint = content, modifier = Modifier.size(28.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MochiTheme.textStyles.titleMedium, color = content)
+            if (!summary.isNullOrBlank()) {
+                Text(
+                    summary,
+                    style = MochiTheme.textStyles.bodySmall,
+                    color = content.copy(alpha = 0.85f),
+                    modifier = Modifier.padding(top = 3.dp),
+                )
+            }
+        }
+        trailing?.invoke()
+    }
+}
+
+/** 证书链里的一行：标签 + 可换行的值。 */
+@Composable
+private fun CertLine(
+    label: String,
+    value: String,
+    monospace: Boolean = false,
+    color: Color? = null,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+    ) {
+        Text(
+            "$label: ",
+            style = MochiTheme.textStyles.bodySmall,
+            color = MochiTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            value,
+            style = if (monospace) {
+                MochiTheme.textStyles.bodySmall.copy(fontFamily = FontFamily.Monospace)
+            } else {
+                MochiTheme.textStyles.bodySmall
+            },
+            color = color ?: MochiTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+/** 长文本（哈希、指纹、质询）用可换行的等宽行，避免被列表副标题截断。 */
+@Composable
+private fun WrappedValueRow(title: String, value: String, monospace: Boolean = false) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 12.dp),
+    ) {
+        Text(title, style = MochiTheme.textStyles.bodyLarge)
+        Text(
+            value,
+            style = if (monospace) {
+                MochiTheme.textStyles.footnote.copy(fontFamily = FontFamily.Monospace)
+            } else {
+                MochiTheme.textStyles.footnote
+            },
+            color = MochiTheme.colorScheme.onSurfaceVariant,
+            softWrap = true,
+            modifier = Modifier.padding(top = 4.dp),
+        )
     }
 }
