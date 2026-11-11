@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -307,13 +309,23 @@ private fun DownloadProgressRow(
     secondaryColor: Color,
     onCancel: () -> Unit,
 ) {
+    // 每一块数据到达都会更新 fraction；补一个短动画，进度条是连续走的而不是一跳一跳。
+    val animated by animateFloatAsState(
+        targetValue = progress.fraction.coerceIn(0f, 1f),
+        animationSpec = tween(durationMillis = 180),
+        label = "download-progress",
+    )
     Column(
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 18.dp, vertical = 12.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            MochiProgressRing(progress = progress.fraction, size = 30.dp)
+            // 服务器没给 Content-Length 时用不确定进度（转圈），不会假装 0%。
+            MochiProgressRing(
+                progress = if (progress.total > 0) animated else null,
+                size = 30.dp,
+            )
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(progress.name, style = MochiTheme.textStyles.bodyMedium)
@@ -329,7 +341,9 @@ private fun DownloadProgressRow(
             }
         }
         Spacer(Modifier.height(10.dp))
-        MochiProgressBar(progress.fraction)
+        if (progress.total > 0) {
+            MochiProgressBar(animated)
+        }
         Spacer(Modifier.height(10.dp))
         MochiButton(
             onClick = onCancel,

@@ -138,15 +138,24 @@ object KeyboxParser {
         )
     }
 
+    /**
+     * keybox.xml 里的 <Certificate> 常见两种写法：完整 PEM（带 BEGIN/END 头）和裸 base64（没有头），
+     * 还可能被 XML 换行、缩进切开。只认 PEM 会解析失败，导致「最早到期」偶尔显示未知，所以这里
+     * 统一去掉空白后按 base64 解码，再交给 X509 解析；失败才返回 null。
+     */
     private fun parseCertificate(pem: String): Long? = try {
-        val normalized = pem.replace("\r", "").trim()
-        if (!normalized.contains("BEGIN CERTIFICATE")) {
+        val compact = pem.filterNot { it.isWhitespace() }
+        val body = if (compact.contains("BEGINCERTIFICATE")) {
+            compact.substringAfter("BEGINCERTIFICATE").substringBefore("ENDCERTIFICATE")
+        } else {
+            compact
+        }.filter { it.isLetterOrDigit() || it == '+' || it == '/' || it == '=' }
+        if (body.length < 64) {
             null
         } else {
-            val factory = CertificateFactory.getInstance("X.509")
-            val certificate = factory.generateCertificate(
-                ByteArrayInputStream(normalized.toByteArray(Charsets.US_ASCII)),
-            ) as X509Certificate
+            val der = android.util.Base64.decode(body, android.util.Base64.DEFAULT)
+            val certificate = CertificateFactory.getInstance("X.509")
+                .generateCertificate(ByteArrayInputStream(der)) as X509Certificate
             certificate.notAfter.time
         }
     } catch (_: Throwable) {

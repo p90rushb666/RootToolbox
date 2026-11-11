@@ -36,6 +36,7 @@ import ui.feice.mochi.basic.Text
 import ui.feice.mochi.icons.MochiIonicon
 import ui.feice.mochi.list.MochiListRow
 import ui.feice.mochi.list.mochiListSection
+import ui.feice.mochi.navigation.LocalMochiBottomBarInset
 import ui.feice.mochi.navigation.MochiLazyCompactTitleScaffold
 import ui.feice.mochi.theme.MochiTheme
 
@@ -116,17 +117,10 @@ fun SettingsScreen(
         }
 
         mochiListSection(key = "general", header = "通用") {
-            row(key = "refresh-open") {
-                MochiListRow(
-                    title = "打开时自动刷新",
-                    subtitle = "每次回到前台都重新检测 Root",
-                    trailing = { MochiSwitch(settings.refreshOnOpen, { viewModel.setRefreshOnOpen(it) }) },
-                )
-            }
             row(key = "auto-root") {
                 MochiListRow(
-                    title = "启动时检测 Root",
-                    subtitle = "关闭后首页不主动请求授权",
+                    title = "启动时检测",
+                    subtitle = "每次重新打开 App 才检测 Root 与密钥，切换后台不检测",
                     trailing = { MochiSwitch(settings.autoCheckRoot, { viewModel.setAutoCheckRoot(it) }) },
                 )
             }
@@ -218,58 +212,56 @@ fun SettingsScreen(
         }
 
         mochiListSection(
-            key = "integrity",
-            header = "完整性检测",
-            footer = "Play Integrity 的 token 只能由服务端解码；端点和项目编号留空时，完整性页会显示「无法判定」。",
+            key = "attestation",
+            header = "密钥检测",
+            footer = "使用 Android 官方密钥认证：生成一次性密钥、校验证书链到 Google 认证根，并核对登录吊销列表。无需 Root。",
         ) {
-            row(key = "endpoint") {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 18.dp, vertical = 14.dp),
-                ) {
-                    Text("解码服务端点", style = MochiTheme.textStyles.bodyLarge)
-                    Spacer(Modifier.height(8.dp))
-                    var endpoint by remember(settings.integrityEndpoint) {
-                        mutableStateOf(settings.integrityEndpoint)
-                    }
-                    MochiTextField(
-                        endpoint,
-                        { endpoint = it },
-                        placeholder = "https://your-server.example.com/integrity",
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    MochiButton(
-                        onClick = { viewModel.setIntegrityEndpoint(endpoint) },
-                        style = ui.feice.mochi.basic.MochiButtonStyle.Tonal,
-                    ) { Text("保存端点") }
-                }
+            row(key = "details") {
+                MochiListRow(
+                    title = "显示证书链与明细",
+                    subtitle = "关闭后只显示「有效 / 无效」结论",
+                    trailing = {
+                        MochiSwitch(settings.attestationShowDetails, { viewModel.setAttestationShowDetails(it) })
+                    },
+                )
             }
-            row(key = "project") {
+            row(key = "timeout") {
                 Column(
                     Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 18.dp, vertical = 14.dp),
                 ) {
-                    Text("Google Cloud 项目编号", style = MochiTheme.textStyles.bodyLarge)
+                    Text("检测超时", style = MochiTheme.textStyles.bodyLarge)
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        "纯数字，用于 setCloudProjectNumber",
+                        "个别设备 Keystore 可能卡住，超时后显示「无法检测」",
                         style = MochiTheme.textStyles.footnote,
                         color = MochiTheme.colorScheme.onSurfaceVariant,
                     )
-                    Spacer(Modifier.height(8.dp))
-                    var project by remember(settings.integrityProjectNumber) {
-                        mutableStateOf(settings.integrityProjectNumber)
-                    }
-                    MochiTextField(project, { project = it }, placeholder = "123456789012")
                     Spacer(Modifier.height(10.dp))
-                    MochiButton(
-                        onClick = { viewModel.setIntegrityProjectNumber(project) },
-                        style = ui.feice.mochi.basic.MochiButtonStyle.Tonal,
-                    ) { Text("保存编号") }
+                    MochiSegmentedControl(
+                        selectedIndex = when (settings.attestationTimeoutSec) {
+                            5 -> 0
+                            20 -> 2
+                            else -> 1
+                        },
+                        onSelect = { index ->
+                            viewModel.setAttestationTimeout(
+                                when (index) {
+                                    0 -> 5
+                                    2 -> 20
+                                    else -> 10
+                                },
+                            )
+                        },
+                        items = persistentListOf("5 秒", "10 秒", "20 秒"),
+                    )
                 }
             }
+        }
+
+        item(key = "bottom-space") {
+            Spacer(Modifier.height(LocalMochiBottomBarInset.current + 24.dp))
         }
     }
 }

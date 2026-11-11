@@ -71,7 +71,6 @@ object ModuleLoadChecker {
         val updateFlag = field("UPDATEFLAG") == "1"
         val keybox = field("KEYBOX")
         val selinux = field("SELINUX").ifBlank { null }
-        val zygiskRaw = field("ZYGISK")
 
         val keyboxParts = keybox.split("|")
         val keyboxSize = keyboxParts.getOrNull(0)?.toLongOrNull()
@@ -85,13 +84,6 @@ object ModuleLoadChecker {
                 if (idx <= 0) null else line.substring(0, idx).trim() to line.substring(idx + 1).trim()
             }
             .toMap()
-
-        // magisk --sqlite 失败时输出为空，此时不把 Zygisk 当成"关闭"，而是当作未知证据。
-        val zygisk = when (zygiskRaw.trim()) {
-            "value=1", "1" -> true
-            "value=0", "0" -> false
-            else -> null
-        }
 
         val facts = buildList {
             add("模块目录" to moduleDir.ifBlank { "未发现" })
@@ -109,7 +101,6 @@ object ModuleLoadChecker {
             }
             add("标记文件" to if (markers.isEmpty()) "无" else markers.joinToString("、"))
             add("待重启更新" to if (updateDir.isNotBlank()) "存在 $updateDir" else "无")
-            zygisk?.let { add("Zygisk" to if (it) "已开启" else "已关闭") }
             add("keybox.xml" to if (keyboxSize == null) "不存在" else "${keyboxSize}B · ${KeyboxMeta.formatDate(keyboxMtime ?: 0)}")
             keyboxSha?.let { add("设备 SHA-256" to it.take(16) + "…") }
             selinux?.let { add("SELinux" to it) }
@@ -162,13 +153,6 @@ object ModuleLoadChecker {
                 advice = "重新检查；若持续不一致，先排查是否有其它 keybox 管理类模块。"
             }
 
-            zygisk == false -> {
-                state = ModuleLoadState.UNKNOWN
-                reasons += "Zygisk 处于关闭状态，Tricky Store 不会注入 Zygote。"
-                advice = "在 Magisk 设置中开启 Zygisk 后重启。"
-                needsReboot = true
-            }
-
             else -> {
                 state = ModuleLoadState.LOADED
                 reasons += "模块目录存在，未发现 disable / remove / update 标记，模块不在待重启更新状态。"
@@ -177,7 +161,6 @@ object ModuleLoadChecker {
                 } else {
                     reasons += "keybox.xml 可读；本次没有可对照的写入哈希，因此未做一致性校验。"
                 }
-                if (zygisk == true) reasons += "Zygisk 已开启。"
                 evidenceNote = "以上为静态文件证据；本应用不会读取运行中的进程内存，无法证明模块此刻确实已注入。"
             }
         }
@@ -221,7 +204,6 @@ object ModuleLoadChecker {
         if [ -f "${'$'}M/module.prop" ]; then echo PROP_START; cat "${'$'}M/module.prop"; echo PROP_END; fi
         if [ -f "${'$'}K" ]; then echo "KEYBOX|${'$'}(stat -c %s "${'$'}K")|${'$'}(stat -c %Y "${'$'}K")|${'$'}(sha256sum "${'$'}K" 2>/dev/null | cut -d' ' -f1)"; else echo "KEYBOX|||"; fi
         echo "SELINUX|${'$'}(getenforce 2>/dev/null)"
-        echo "ZYGISK|${'$'}(magisk --sqlite "SELECT value FROM settings WHERE key='zygisk'" 2>/dev/null)"
         echo LOAD_END
     """.trimIndent()
 }

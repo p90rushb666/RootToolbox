@@ -12,8 +12,6 @@ data class AppSettings(
     val keyColor: Long? = null,
     val predictiveBack: Boolean = true,
     val autoCheckRoot: Boolean = true,
-    /** Re-detect root every time the app comes to the foreground. */
-    val refreshOnOpen: Boolean = true,
     /** Show the 三绿 badge on keybox rows. */
     val showGreenBadge: Boolean = true,
     val showArchivedByDefault: Boolean = false,
@@ -23,10 +21,10 @@ data class AppSettings(
     val keepBackups: Int = 5,
     /** Ask for the device credential (PIN / pattern / biometric) right before writing. */
     val requireCredential: Boolean = false,
-    /** User-hosted Play Integrity decode endpoint; blank means "not configured". */
-    val integrityEndpoint: String = "",
-    /** Google Cloud project number used by setCloudProjectNumber; blank means "not configured". */
-    val integrityProjectNumber: String = "",
+    /** 密钥检测页是否展示证书链与认证明细。 */
+    val attestationShowDetails: Boolean = true,
+    /** 密钥检测超时秒数；个别设备 Keystore 可能卡住。 */
+    val attestationTimeoutSec: Int = 10,
 )
 
 class SettingsStore(context: Context) {
@@ -41,14 +39,13 @@ class SettingsStore(context: Context) {
         keyColor = prefs.getLong(KEY_COLOR, 0L).takeIf { it != 0L },
         predictiveBack = prefs.getBoolean(KEY_PREDICTIVE, true),
         autoCheckRoot = prefs.getBoolean(KEY_AUTO_ROOT, true),
-        refreshOnOpen = prefs.getBoolean(KEY_REFRESH_OPEN, true),
         showGreenBadge = prefs.getBoolean(KEY_GREEN_BADGE, true),
         showArchivedByDefault = prefs.getBoolean(KEY_ARCHIVED, false),
         savedTarget = prefs.getString(KEY_TARGET, null)?.takeIf { it.isNotBlank() },
         keepBackups = prefs.getInt(KEY_KEEP_BACKUPS, 5).coerceIn(1, 50),
         requireCredential = prefs.getBoolean(KEY_REQUIRE_CREDENTIAL, false),
-        integrityEndpoint = prefs.getString(KEY_INTEGRITY_ENDPOINT, "").orEmpty(),
-        integrityProjectNumber = prefs.getString(KEY_INTEGRITY_PROJECT, "").orEmpty(),
+        attestationShowDetails = prefs.getBoolean(KEY_ATTEST_DETAILS, true),
+        attestationTimeoutSec = prefs.getInt(KEY_ATTEST_TIMEOUT, 10).coerceIn(5, 30),
     )
 
     fun save(settings: AppSettings) {
@@ -58,14 +55,13 @@ class SettingsStore(context: Context) {
             .putLong(KEY_COLOR, settings.keyColor ?: 0L)
             .putBoolean(KEY_PREDICTIVE, settings.predictiveBack)
             .putBoolean(KEY_AUTO_ROOT, settings.autoCheckRoot)
-            .putBoolean(KEY_REFRESH_OPEN, settings.refreshOnOpen)
             .putBoolean(KEY_GREEN_BADGE, settings.showGreenBadge)
             .putBoolean(KEY_ARCHIVED, settings.showArchivedByDefault)
             .putString(KEY_TARGET, settings.savedTarget)
             .putInt(KEY_KEEP_BACKUPS, settings.keepBackups)
             .putBoolean(KEY_REQUIRE_CREDENTIAL, settings.requireCredential)
-            .putString(KEY_INTEGRITY_ENDPOINT, settings.integrityEndpoint)
-            .putString(KEY_INTEGRITY_PROJECT, settings.integrityProjectNumber)
+            .putBoolean(KEY_ATTEST_DETAILS, settings.attestationShowDetails)
+            .putInt(KEY_ATTEST_TIMEOUT, settings.attestationTimeoutSec)
             .apply()
     }
 
@@ -75,14 +71,13 @@ class SettingsStore(context: Context) {
         const val KEY_COLOR = "key_color"
         const val KEY_PREDICTIVE = "predictive_back"
         const val KEY_AUTO_ROOT = "auto_check_root"
-        const val KEY_REFRESH_OPEN = "refresh_on_open"
         const val KEY_GREEN_BADGE = "show_green_badge"
         const val KEY_ARCHIVED = "show_archived"
         const val KEY_TARGET = "saved_target"
         const val KEY_KEEP_BACKUPS = "keep_backups"
         const val KEY_REQUIRE_CREDENTIAL = "require_credential"
-        const val KEY_INTEGRITY_ENDPOINT = "integrity_endpoint"
-        const val KEY_INTEGRITY_PROJECT = "integrity_project"
+        const val KEY_ATTEST_DETAILS = "attestation_show_details"
+        const val KEY_ATTEST_TIMEOUT = "attestation_timeout_sec"
     }
 }
 

@@ -87,8 +87,8 @@ object Http {
     /**
      * POSTs [body] as JSON and returns the response text.
      *
-     * The body is **never** written to the diagnostics log: it carries an encrypted Play Integrity
-     * token and must not be persisted anywhere in the app.
+     * The body is **never** written to the diagnostics log, so callers can safely post sensitive
+     * payloads (tokens, certificates) without them ending up in the in-memory report.
      */
     suspend fun postJson(
         url: String,

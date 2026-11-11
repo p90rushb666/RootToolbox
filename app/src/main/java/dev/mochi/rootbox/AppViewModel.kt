@@ -9,8 +9,6 @@ import dev.mochi.rootbox.core.BackupScan
 import dev.mochi.rootbox.core.BackupStore
 import dev.mochi.rootbox.core.DiagLog
 import dev.mochi.rootbox.core.InstallResult
-import dev.mochi.rootbox.core.IntegrityChecker
-import dev.mochi.rootbox.core.IntegrityOutcome
 import dev.mochi.rootbox.core.KeyboxInstaller
 import dev.mochi.rootbox.core.KeyboxMeta
 import dev.mochi.rootbox.core.KeyboxParser
@@ -20,6 +18,8 @@ import dev.mochi.rootbox.core.ModuleUpdateChecker
 import dev.mochi.rootbox.core.ModuleUpdateItem
 import dev.mochi.rootbox.core.DownloadedModule
 import dev.mochi.rootbox.core.ModuleDownloadStore
+import dev.mochi.rootbox.core.AttestationChecker
+import dev.mochi.rootbox.core.AttestationResult
 import dev.mochi.rootbox.core.RootChecker
 import dev.mochi.rootbox.core.RootInfo
 import dev.mochi.rootbox.core.Shell
@@ -93,9 +93,8 @@ data class AppState(
     val backupsLoading: Boolean = false,
     val moduleLoad: ModuleLoadStatus? = null,
     val moduleLoadChecking: Boolean = false,
-    val integrity: IntegrityOutcome? = null,
-    val integrityRunning: Boolean = false,
-    val integrityPhase: String = "",
+    val attestation: AttestationResult? = null,
+    val attestationRunning: Boolean = false,
     val moduleUpdates: ModuleUpdateUi = ModuleUpdateUi(),
 ) {
     val allItems: List<KeyboxItem> get() = sources.flatMap { it.items }
@@ -104,7 +103,6 @@ data class AppState(
 class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val settingsStore = SettingsStore(application)
-    private val integrityChecker = IntegrityChecker(application)
 
     private val _settings = MutableStateFlow(settingsStore.load())
     val settings: StateFlow<AppSettings> = _settings.asStateFlow()
@@ -118,9 +116,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** 最近一次成功写入的 SHA-256，用于模块加载检测的对照。 */
     private var lastWrittenSha: String? = null
 
+    private var started = false
+
     fun start() {
-        if (_settings.value.autoCheckRoot) refreshRoot()
-        else viewModelScope.launch { prepareWithoutRootProbe() }
+        // 配置变化/重组会再次调用 start；用一次性标记保证只有真正的冷启动才自动检测。
+        if (started) return
+        started = true
+        if (_settings.value.autoCheckRoot) {
+            refreshRoot()
+            runAttestation()
+        } else {
+            viewModelScope.launch { prepareWithoutRootProbe() }
+        }
     }
 
     /** 第一次进入密钥库时按需拉取，之后不再重复触发。 */
@@ -136,13 +143,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshRoot() {
         viewModelScope.launch { refreshAll() }
-    }
-
-    fun onAppForeground() {
-        if (!_settings.value.autoCheckRoot || !_settings.value.refreshOnOpen) return
-        if (_state.value.rootChecking) return
-        DiagLog.info("ui", "回到前台，自动刷新 Root")
-        refreshRoot()
     }
 
     suspend fun refreshAll() {
@@ -581,20 +581,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // ---------------------------------------------------------------- 完整性检测
+    // ---------------------------------------------------------------- 密钥认证
 
-    fun runIntegrityCheck() {
-        if (_state.value.integrityRunning) return
+    /** 只在冷启动或用户手动点「重新检测」时调用；切换后台不会触发。 */
+    fun runAttestation() {
+        if (_state.value.attestationRunning) return
         viewModelScope.launch {
-            _state.update {
-                it.copy(integrityRunning = true, integrity = null, integrityPhase = "准备中…")
-            }
-            val outcome = integrityChecker.check(
-                endpoint = _settings.value.integrityEndpoint,
-                projectNumber = _settings.value.integrityProjectNumber,
-            ) { phase -> _state.update { it.copy(integrityPhase = phase) } }
-            _state.update { it.copy(integrity = outcome, integrityRunning = false, integrityPhase = "") }
-            DiagLog.info("integrity", if (outcome.ok) "判定已返回" else "失败：${outcome.failure?.kind}")
+            _state.update { it.copy(attestationRunning = true) }
+            val timeoutMs = _settings.value.attestationTimeoutSec * 1000L
+            val result = AttestationChecker.check(getApplication(), timeoutMs)
+            _state.update { it.copy(attestation = result, attestationRunning = false) }
         }
     }
 
@@ -798,18 +794,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setAutoCheckRoot(enabled: Boolean) = updateSettings { it.copy(autoCheckRoot = enabled) }
 
-    fun setRefreshOnOpen(enabled: Boolean) = updateSettings { it.copy(refreshOnOpen = enabled) }
-
     fun setShowGreenBadge(enabled: Boolean) = updateSettings { it.copy(showGreenBadge = enabled) }
 
     fun setKeepBackups(count: Int) = updateSettings { it.copy(keepBackups = count.coerceIn(1, 50)) }
 
     fun setRequireCredential(enabled: Boolean) = updateSettings { it.copy(requireCredential = enabled) }
 
-    fun setIntegrityEndpoint(value: String) = updateSettings { it.copy(integrityEndpoint = value.trim()) }
+    fun setAttestationShowDetails(enabled: Boolean) =
+        updateSettings { it.copy(attestationShowDetails = enabled) }
 
-    fun setIntegrityProjectNumber(value: String) =
-        updateSettings { it.copy(integrityProjectNumber = value.trim()) }
+    fun setAttestationTimeout(seconds: Int) =
+        updateSettings { it.copy(attestationTimeoutSec = seconds.coerceIn(5, 30)) }
 
     fun setShowArchivedDefault(enabled: Boolean) {
         updateSettings { it.copy(showArchivedByDefault = enabled) }

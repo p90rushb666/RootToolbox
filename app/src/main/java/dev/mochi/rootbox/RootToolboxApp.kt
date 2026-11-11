@@ -22,16 +22,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import dev.mochi.rootbox.ui.AboutScreen
 import dev.mochi.rootbox.ui.BackupScreen
 import dev.mochi.rootbox.ui.DiagnosticsScreen
 import dev.mochi.rootbox.ui.EnvironmentScreen
 import dev.mochi.rootbox.ui.HomeScreen
 import dev.mochi.rootbox.ui.InstallPreviewScreen
-import dev.mochi.rootbox.ui.IntegrityScreen
+import dev.mochi.rootbox.ui.AttestationScreen
 import dev.mochi.rootbox.ui.KeysScreen
 import dev.mochi.rootbox.ui.ModuleScreen
 import dev.mochi.rootbox.ui.ModuleUpdateScreen
@@ -66,7 +63,7 @@ private const val RouteDiagnostics = "diagnostics"
 private const val RouteAbout = "about"
 private const val RouteSettings = "settings"
 private const val RouteBackup = "backup"
-private const val RouteIntegrity = "integrity"
+private const val RouteAttestation = "attestation"
 private const val RouteModuleUpdates = "module-updates"
 private const val RouteKeys = "keys"
 private const val RoutePreview = "preview"
@@ -75,7 +72,7 @@ private const val RoutePreview = "preview"
 private const val SourceEnvironment = "home/environment"
 private const val SourceModule = "home/module"
 private const val SourceDiagnostics = "home/diagnostics"
-private const val SourceIntegrity = "home/integrity"
+private const val SourceAttestation = "home/attestation"
 private const val SourceModuleUpdates = "home/module-updates"
 
 @Composable
@@ -107,15 +104,8 @@ fun RootToolboxApp(viewModel: AppViewModel) {
             }
         }
 
-        // 每次回到前台都重测一次 Root，避免冷启动时守护进程还没就绪而误判成「受限」。
-        val lifecycleOwner = LocalLifecycleOwner.current
-        DisposableEffect(lifecycleOwner) {
-            val observer = LifecycleEventObserver { _, event ->
-                if (event == Lifecycle.Event.ON_RESUME) viewModel.onAppForeground()
-            }
-            lifecycleOwner.lifecycle.addObserver(observer)
-            onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-        }
+        // 刻意不监听 ON_RESUME：按需求，切换后台再回来不重新检测 Root / 密钥，
+        // 只有冷启动（viewModel.start()）或用户手动刷新才检测。
 
         val showToast: (String) -> Unit = { message -> toast.show(message) }
         val openBrowser: (String) -> Unit = { url ->
@@ -214,7 +204,7 @@ private fun HomeTab(
                 onOpenEnvironment = { nav.push(RouteEnvironment, from = SourceEnvironment) },
                 onOpenModule = { nav.push(RouteModule, from = SourceModule) },
                 onOpenDiagnostics = { nav.push(RouteDiagnostics, from = SourceDiagnostics) },
-                onOpenIntegrity = { nav.push(RouteIntegrity, from = SourceIntegrity) },
+                onOpenAttestation = { nav.push(RouteAttestation, from = SourceAttestation) },
                 onOpenModuleUpdates = { nav.push(RouteModuleUpdates, from = SourceModuleUpdates) },
                 onOpenAbout = { nav.push(RouteAbout) },
             )
@@ -229,7 +219,7 @@ private fun HomeTab(
                 showToast = showToast,
             )
             RouteBackup -> BackupScreen(state, viewModel, back, showToast)
-            RouteIntegrity -> IntegrityScreen(state, settings, viewModel, back, showToast)
+            RouteAttestation -> AttestationScreen(state, settings, viewModel, back, showToast)
             RouteModuleUpdates -> ModuleUpdateScreen(state, viewModel, back, showToast)
             RouteTarget -> TargetScreen(state, viewModel, back, showToast)
             RouteDiagnostics -> DiagnosticsScreen(state, viewModel, back, showToast)
@@ -298,7 +288,7 @@ private fun titleFor(route: String): String = when (route) {
     RouteAbout -> "关于"
     RouteSettings -> "设置"
     RouteBackup -> "备份中心"
-    RouteIntegrity -> "完整性检测"
+    RouteAttestation -> "密钥检测"
     RouteModuleUpdates -> "模块更新"
     RouteKeys -> "密钥库"
     RoutePreview -> "安装预览"

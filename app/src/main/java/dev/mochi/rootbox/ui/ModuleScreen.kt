@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import dev.mochi.rootbox.AppState
@@ -67,34 +68,31 @@ fun ModuleScreen(
             header = "加载状态",
         ) {
             row(key = "status") {
-                // MochiListRow 的 value 走组件库的 ListBlurText：状态切换时做模糊过渡，
-                // 与首页刷新时「已授权 → 检测中」的表现一致。
-                val statusText = when {
+                // 只保留一个彩色的状态胶囊：之前 value 和胶囊都写「已加载」，同一个词出现两次。
+                val loaded = load?.state == ModuleLoadState.LOADED
+                val label = when {
                     state.moduleLoadChecking -> "检测中"
-                    load?.state == ModuleLoadState.LOADED -> "已加载"
+                    load == null -> "未检查"
+                    loaded -> "已加载"
                     else -> "未加载"
                 }
                 MochiListRow(
                     title = "加载状态",
                     subtitle = load?.reasons?.firstOrNull()?.takeIf { !state.moduleLoadChecking },
-                    value = statusText,
                     status = {
-                        if (!state.moduleLoadChecking && load != null) {
-                            val loaded = load.state == ModuleLoadState.LOADED
-                            MochiListStatusChip(
-                                text = if (loaded) "已加载" else "未加载",
-                                containerColor = if (loaded) {
-                                    MochiTheme.colorScheme.primaryContainer
-                                } else {
-                                    MochiTheme.colorScheme.errorContainer
-                                },
-                                contentColor = if (loaded) {
-                                    MochiTheme.colorScheme.onPrimaryContainer
-                                } else {
-                                    MochiTheme.colorScheme.onErrorContainer
-                                },
-                            )
-                        }
+                        MochiListStatusChip(
+                            text = label,
+                            containerColor = when {
+                                state.moduleLoadChecking || load == null -> MochiTheme.colorScheme.surfaceVariant
+                                loaded -> MochiTheme.colorScheme.primaryContainer
+                                else -> MochiTheme.colorScheme.errorContainer
+                            },
+                            contentColor = when {
+                                state.moduleLoadChecking || load == null -> MochiTheme.colorScheme.onSurfaceVariant
+                                loaded -> MochiTheme.colorScheme.onPrimaryContainer
+                                else -> MochiTheme.colorScheme.onErrorContainer
+                            },
+                        )
                     },
                 )
             }
@@ -229,17 +227,33 @@ fun ModuleScreen(
                     MochiListRow("文件大小", value = formatBytes(meta.size.toLong()))
                 }
                 row(key = "sha") {
-                    MochiListRow(
-                        title = "SHA-256",
-                        subtitle = meta.sha256,
-                        trailing = {
+                    // MochiListRow 的副标题是单行省略，64 位哈希会被截断，这里单独用可换行的等宽文本。
+                    androidx.compose.foundation.layout.Column(
+                        androidx.compose.ui.Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 18.dp, vertical = 12.dp),
+                    ) {
+                        androidx.compose.foundation.layout.Row(
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                        ) {
+                            Text("SHA-256", style = MochiTheme.textStyles.bodyLarge)
+                            androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
                             MochiIconButton(
                                 onClick = { copyValue(meta.sha256, "已复制 SHA-256") },
                                 style = MochiButtonStyle.Tonal,
                                 size = 36.dp,
                             ) { MochiIonicon("copy", contentDescription = "复制 SHA-256") }
-                        },
-                    )
+                        }
+                        Text(
+                            meta.sha256,
+                            style = MochiTheme.textStyles.bodySmall.copy(
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                            ),
+                            color = MochiTheme.colorScheme.onSurfaceVariant,
+                            softWrap = true,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
                 }
             }
         }

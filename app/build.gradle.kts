@@ -12,8 +12,8 @@ android {
         applicationId = "dev.mochi.rootbox"
         minSdk = 29
         targetSdk = 36
-        versionCode = 3
-        versionName = "1.2.0"
+        versionCode = 4
+        versionName = "2.0.0"
     }
 
     buildTypes {
@@ -61,9 +61,6 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-collections-immutable:0.5.2")
-
-    // Play Integrity：客户端只负责取加密 token，解码必须由服务端完成。
-    implementation("com.google.android.play:integrity:1.4.0")
 
     implementation("io.github.feice11:mochi-compose:0.2.0")
     implementation("io.github.feice11:mochi-icons:0.2.0")

@@ -11,25 +11,41 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.dp
+import androidx.core.graphics.drawable.toBitmap
 import dev.mochi.rootbox.BuildConfig
-import dev.mochi.rootbox.R
 import ui.feice.mochi.basic.Text
 import ui.feice.mochi.icons.MochiIonicon
 import ui.feice.mochi.list.MochiListCard
 import ui.feice.mochi.list.MochiListRow
 import ui.feice.mochi.list.mochiListSection
+import ui.feice.mochi.navigation.LocalMochiBottomBarInset
 import ui.feice.mochi.navigation.MochiLazyCompactTitleScaffold
 import ui.feice.mochi.theme.MochiTheme
 
 @Composable
 fun AboutScreen(navigationIcon: @Composable () -> Unit) {
     val context = LocalContext.current
+    // 用系统里的应用图标，保证和桌面上的 logo 完全一致（自适应图标由系统渲染）。
+    // PackageManager 读取图标可能阻塞，放到 IO 线程，避免进入关于页时卡住主线程。
+    val appIcon by produceState<ImageBitmap?>(initialValue = null) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                context.packageManager.getApplicationIcon(context.packageName)
+                    .toBitmap(192, 192)
+                    .asImageBitmap()
+            }.getOrNull()
+        }
+    }
     fun open(url: String) {
         runCatching {
             context.startActivity(
@@ -50,13 +66,15 @@ fun AboutScreen(navigationIcon: @Composable () -> Unit) {
                         .padding(vertical = 32.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Image(
-                        painter = painterResource(R.drawable.logo),
-                        contentDescription = "Root 工具箱 logo",
-                        modifier = Modifier
-                            .size(96.dp)
-                            .clip(RoundedCornerShape(24.dp)),
-                    )
+                    appIcon?.let { bitmap ->
+                        Image(
+                            bitmap = bitmap,
+                            contentDescription = "Root 工具箱 logo",
+                            modifier = Modifier
+                                .size(96.dp)
+                                .clip(RoundedCornerShape(24.dp)),
+                        )
+                    }
                     Spacer(Modifier.height(16.dp))
                     Text("Root 工具箱", style = MochiTheme.textStyles.titleLarge)
                     Spacer(Modifier.height(4.dp))
@@ -79,13 +97,32 @@ fun AboutScreen(navigationIcon: @Composable () -> Unit) {
             row(key = "package") {
                 MochiListRow("包名", value = BuildConfig.APPLICATION_ID)
             }
+            row(key = "project") {
+                MochiListRow(
+                    title = "项目地址",
+                    subtitle = "https://github.com/p90rushb666/RootToolbox",
+                    value = "打开",
+                    chevron = true,
+                    leading = { MochiIonicon("logo-github") },
+                    onClick = { open("https://github.com/p90rushb666/RootToolbox") },
+                )
+            }
         }
 
         mochiListSection(
             key = "thanks",
             header = "鸣谢",
-            footer = "界面与主题由 mochi-compose 提供。",
+            footer = "界面与主题由 mochi-compose 提供；密钥检测参考 KeyAttestation。",
         ) {
+            row(key = "keyattestation") {
+                MochiListRow(
+                    title = "KeyAttestation",
+                    subtitle = "密钥认证的参考实现",
+                    leading = { MochiIonicon("logo-github") },
+                    chevron = true,
+                    onClick = { open("https://github.com/vvb2060/KeyAttestation") },
+                )
+            }
             row(key = "mochi") {
                 MochiListRow(
                     title = "mochi-compose",
@@ -95,6 +132,10 @@ fun AboutScreen(navigationIcon: @Composable () -> Unit) {
                     onClick = { open("https://github.com/feice11/mochi-compose") },
                 )
             }
+        }
+
+        item(key = "bottom-space") {
+            Spacer(Modifier.height(LocalMochiBottomBarInset.current + 24.dp))
         }
     }
 }

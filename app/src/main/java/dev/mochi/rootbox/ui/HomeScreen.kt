@@ -1,5 +1,10 @@
 package dev.mochi.rootbox.ui
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -14,15 +19,19 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import dev.mochi.rootbox.AppState
 import dev.mochi.rootbox.AppViewModel
 import ui.feice.mochi.basic.MochiBarGroup
 import ui.feice.mochi.basic.MochiBarGroupItem
+import ui.feice.mochi.basic.MochiButton
+import ui.feice.mochi.basic.MochiButtonStyle
 import ui.feice.mochi.basic.Text
 import ui.feice.mochi.effect.elastic.mochiPressDeform
 import ui.feice.mochi.effect.glow.mochiPressGlow
@@ -42,7 +51,7 @@ import ui.feice.mochi.theme.MochiTheme
 private const val SourceEnvironment = "home/environment"
 private const val SourceModule = "home/module"
 private const val SourceDiagnostics = "home/diagnostics"
-private const val SourceIntegrity = "home/integrity"
+private const val SourceAttestation = "home/attestation"
 private const val SourceModuleUpdates = "home/module-updates"
 
 @Composable
@@ -52,7 +61,7 @@ fun HomeScreen(
     onOpenEnvironment: () -> Unit,
     onOpenModule: () -> Unit,
     onOpenDiagnostics: () -> Unit,
-    onOpenIntegrity: () -> Unit,
+    onOpenAttestation: () -> Unit,
     onOpenModuleUpdates: () -> Unit,
     onOpenAbout: () -> Unit,
 ) {
@@ -79,7 +88,25 @@ fun HomeScreen(
                     onClick = { viewModel.refreshRoot() },
                     navId = "home.actions",
                     contentKey = "refresh",
-                ) { MochiIonicon("refresh", contentDescription = "重新检测") }
+                ) {
+                    // 只有检测中才启动无限动画，静止时不产生每帧重组。
+                    if (state.rootChecking) {
+                        val spin = rememberInfiniteTransition(label = "refresh")
+                        val angle by spin.animateFloat(
+                            initialValue = 0f,
+                            targetValue = 360f,
+                            animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing)),
+                            label = "refresh-angle",
+                        )
+                        MochiIonicon(
+                            "refresh",
+                            contentDescription = "重新检测",
+                            modifier = Modifier.rotate(angle),
+                        )
+                    } else {
+                        MochiIonicon("refresh", contentDescription = "重新检测")
+                    }
+                }
                 MochiBarGroupItem(
                     onClick = onOpenAbout,
                     navId = "home.actions",
@@ -147,16 +174,47 @@ fun HomeScreen(
                     badge = if (module?.installed == true) "已识别" else null,
                     onClick = onOpenModule,
                 )
+                val attestation = state.attestation
                 HomeGridCard(
                     modifier = Modifier.weight(1f),
-                    title = "完整性检测",
-                    summary = "Play Integrity 实时判定",
-                    icon = "checkmark-circle",
+                    title = "密钥检测",
+                    summary = "官方密钥认证 · 无需 Root",
+                    icon = "shield-checkmark",
                     iconContainer = scheme.secondaryContainer,
                     iconContent = scheme.onSecondaryContainer,
-                    sourceKey = SourceIntegrity,
-                    badge = "需配置",
-                    onClick = onOpenIntegrity,
+                    sourceKey = SourceAttestation,
+                    badge = when {
+                        state.attestationRunning -> "检测中"
+                        attestation == null -> "未检测"
+                        attestation.valid -> "有效"
+                        else -> "无效"
+                    },
+                    badgeContainer = when {
+                        state.attestationRunning || attestation == null -> scheme.surfaceVariant
+                        attestation.valid -> scheme.primaryContainer
+                        else -> scheme.errorContainer
+                    },
+                    badgeContent = when {
+                        state.attestationRunning || attestation == null -> scheme.onSurfaceVariant
+                        attestation.valid -> scheme.onPrimaryContainer
+                        else -> scheme.onErrorContainer
+                    },
+                    action = {
+                        MochiButton(
+                            onClick = { viewModel.runAttestation() },
+                            style = MochiButtonStyle.Tonal,
+                            enabled = !state.attestationRunning,
+                        ) {
+                            Text(
+                                when {
+                                    state.attestationRunning -> "检测中…"
+                                    attestation == null -> "检测"
+                                    else -> "重新检测"
+                                },
+                            )
+                        }
+                    },
+                    onClick = onOpenAttestation,
                 )
             }
         }
@@ -211,6 +269,9 @@ private fun HomeGridCard(
     iconContent: Color,
     sourceKey: String,
     badge: String? = null,
+    badgeContainer: Color? = null,
+    badgeContent: Color? = null,
+    action: (@Composable () -> Unit)? = null,
     onClick: () -> Unit,
 ) {
     val scheme = MochiTheme.colorScheme
@@ -224,7 +285,7 @@ private fun HomeGridCard(
             .mochiNavSource(sourceKey, 28.dp, background)
             .mochiPressDeform()
             .background(background, shape)
-            .height(168.dp)
+            .height(196.dp)
             .mochiPressGlow(glow, shape)
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
@@ -249,7 +310,11 @@ private fun HomeGridCard(
             }
             Spacer(Modifier.weight(1f))
             if (badge != null) {
-                StatusPill(badge, scheme.primaryContainer, scheme.onPrimaryContainer)
+                StatusPill(
+                    text = badge,
+                    containerColor = badgeContainer ?: scheme.primaryContainer,
+                    contentColor = badgeContent ?: scheme.onPrimaryContainer,
+                )
             }
         }
         Spacer(Modifier.weight(1f))
@@ -258,8 +323,12 @@ private fun HomeGridCard(
             summary,
             style = textStyles.bodySmall,
             color = scheme.onSurfaceVariant,
-            maxLines = 2,
+            maxLines = if (action == null) 2 else 1,
             modifier = Modifier.padding(top = 4.dp),
         )
+        if (action != null) {
+            Spacer(Modifier.height(8.dp))
+            action()
+        }
     }
 }

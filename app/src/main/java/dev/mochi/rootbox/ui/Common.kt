@@ -10,6 +10,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
@@ -169,26 +170,37 @@ fun ShortContentPullRefresh(
                     }
                 },
         ) {
+            // content 不读 pullState，拖拽时不会因为父级重组而整页重画。
             content()
         }
 
-        val pull = pullState.floatValue
-        if (pull > 1f) {
-            Box(
-                Modifier
-                    .align(Alignment.TopCenter)
-                    // Keep the spinner below the status bar / camera cutout: it belongs to the gap
-                    // that opens between the system bar and the pulled-down page.
-                    .statusBarsPadding()
-                    .offset(y = with(density) { (pull / 2f).toDp() } - 12.dp),
-            ) {
-                // iOS 风格的辐条：下拉时按进度一根根显出，刷新时自己转。
-                MochiActivityIndicator(
-                    size = 24.dp,
-                    reveal = if (refreshing) null else ({ (pull / triggerPx).coerceIn(0f, 1f) }),
-                )
-            }
-        }
+        // 指示器单独成一个 composable，只有它订阅 pullState；这是首页下拉不再卡顿的关键。
+        PullRefreshIndicator(pullState = pullState, refreshing = refreshing, triggerPx = triggerPx)
+    }
+}
+
+@Composable
+private fun BoxScope.PullRefreshIndicator(
+    pullState: androidx.compose.runtime.MutableFloatState,
+    refreshing: Boolean,
+    triggerPx: Float,
+) {
+    val pull = pullState.floatValue
+    if (pull <= 1f) return
+    val density = LocalDensity.current
+    Box(
+        Modifier
+            .align(Alignment.TopCenter)
+            // Keep the spinner below the status bar / camera cutout: it belongs to the gap
+            // that opens between the system bar and the pulled-down page.
+            .statusBarsPadding()
+            .offset(y = with(density) { (pull / 2f).toDp() } - 12.dp),
+    ) {
+        // iOS 风格的辐条：下拉时按进度一根根显出，刷新时自己转。
+        MochiActivityIndicator(
+            size = 24.dp,
+            reveal = if (refreshing) null else ({ (pull / triggerPx).coerceIn(0f, 1f) }),
+        )
     }
 }
 
