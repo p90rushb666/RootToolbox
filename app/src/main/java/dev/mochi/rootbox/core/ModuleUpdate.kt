@@ -9,6 +9,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 
 /** 设备上已安装的 Magisk / KernelSU / APatch 模块（读自 module.prop）。 */
 data class InstalledModule(
@@ -107,10 +108,23 @@ object ModuleUpdateChecker {
      * GitHub 仓库并读取最新 Release 的 tag 与 zip 资源。两者都没有可靠版本信息时标注原因，
      * 绝不把「读不到」当作「有更新」。
      */
-    suspend fun check(modules: List<InstalledModule>): List<ModuleUpdateItem> = withContext(Dispatchers.IO) {
+    suspend fun check(
+        modules: List<InstalledModule>,
+        /** 每检查完一个模块回调一次（done, total），用于界面上的实时进度。 */
+        onProgress: ((done: Int, total: Int) -> Unit)? = null,
+    ): List<ModuleUpdateItem> = withContext(Dispatchers.IO) {
         // 每个模块都要发 1~2 个网络请求，串行会让 N 个模块等 N 倍时间。
+        val total = modules.size
+        val done = AtomicInteger(0)
+        onProgress?.invoke(0, total)
         val items = coroutineScope {
-            modules.map { module -> async { resolve(module) } }.awaitAll()
+            modules.map { module ->
+                async {
+                    val item = resolve(module)
+                    onProgress?.invoke(done.incrementAndGet(), total)
+                    item
+                }
+            }.awaitAll()
         }
         // 有更新的排最前，没有 updateJson / 无法检查的沉到最底。
         items.sortedWith(

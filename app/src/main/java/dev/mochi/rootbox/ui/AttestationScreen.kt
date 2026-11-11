@@ -2,7 +2,13 @@ package dev.mochi.rootbox.ui
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,9 +19,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -27,7 +36,10 @@ import dev.mochi.rootbox.core.AttestationResult
 import dev.mochi.rootbox.core.BootTone
 import dev.mochi.rootbox.core.RootKind
 import dev.mochi.rootbox.data.AppSettings
+import kotlinx.coroutines.launch
 import ui.feice.mochi.basic.MochiActivityIndicator
+import ui.feice.mochi.basic.MochiButtonStyle
+import ui.feice.mochi.basic.MochiIconButton
 import ui.feice.mochi.basic.Text
 import ui.feice.mochi.icons.MochiIonicon
 import ui.feice.mochi.list.MochiListRow
@@ -57,31 +69,69 @@ fun AttestationScreen(
     val scheme = MochiTheme.colorScheme
     val context = LocalContext.current
     val showDetails = settings.attestationShowDetails
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
 
     MochiLazyCompactTitleScaffold(
         title = "密钥检测",
         subtitle = when {
-            running -> "正在向系统 Keystore 申请认证…"
+            running -> "检测中…"
             result == null -> "尚未检测"
             else -> "检测于 ${AttestationChecker.formatTime(result.checkedAt)}"
         },
         navigationIcon = navigationIcon,
+        listState = listState,
+        actions = {
+            MochiIconButton(
+                onClick = {
+                    // 回到顶部，让「检测中」卡片和结论立刻可见。
+                    scope.launch { listState.animateScrollToItem(0) }
+                    viewModel.runAttestation()
+                },
+                style = MochiButtonStyle.Tonal,
+                size = 36.dp,
+                enabled = !running,
+            ) {
+                if (running) {
+                    // 检测中让刷新图标转起来，和首页的刷新按钮一致。
+                    val spin = rememberInfiniteTransition(label = "attest-refresh")
+                    val angle by spin.animateFloat(
+                        initialValue = 0f,
+                        targetValue = 360f,
+                        animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing)),
+                        label = "attest-angle",
+                    )
+                    MochiIonicon(
+                        "refresh",
+                        contentDescription = "重新检测",
+                        modifier = Modifier.rotate(angle),
+                    )
+                } else {
+                    MochiIonicon("refresh", contentDescription = "重新检测")
+                }
+            }
+        },
     ) {
-        if (result == null) {
-            item(key = "loading") {
+        if (running) {
+            // 刷新时页面顶部明确显示「检测中」，即使下面还留着上一次的结果。
+            item(key = "running") {
                 MochiStatusCard(
-                    icon = if (running) "sync" else "shield-checkmark",
-                    title = if (running) "检测中" else "未检测",
-                    summary = if (running) {
-                        "正在生成一次性密钥并校验证书链，请稍候…"
-                    } else {
-                        "重新打开应用或回到首页点「检测」开始。"
-                    },
+                    icon = "sync",
+                    title = "检测中",
+                    summary = "正在生成一次性密钥并校验证书链，请稍候…",
                     container = scheme.surfaceContainer,
                     content = scheme.onSurfaceVariant,
-                    trailing = if (running) {
-                        { MochiActivityIndicator(size = 22.dp) }
-                    } else null,
+                    trailing = { MochiActivityIndicator(size = 22.dp) },
+                )
+            }
+        } else if (result == null) {
+            item(key = "idle") {
+                MochiStatusCard(
+                    icon = "shield-checkmark",
+                    title = "未检测",
+                    summary = "点右上角刷新按钮，或回到首页点「检测」开始。",
+                    container = scheme.surfaceContainer,
+                    content = scheme.onSurfaceVariant,
                 )
             }
         }

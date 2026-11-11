@@ -180,8 +180,8 @@ fun HomeScreen(
                     title = "密钥检测",
                     summary = "官方密钥认证 · 无需 Root",
                     icon = "shield-checkmark",
-                    iconContainer = scheme.secondaryContainer,
-                    iconContent = scheme.onSecondaryContainer,
+                    iconContainer = scheme.primaryContainer,
+                    iconContent = scheme.onPrimaryContainer,
                     sourceKey = SourceAttestation,
                     badge = when {
                         state.attestationRunning -> "检测中"
@@ -243,8 +243,8 @@ fun HomeScreen(
                     title = "诊断",
                     summary = "运行日志、崩溃报告与复制",
                     icon = "document-text",
-                    iconContainer = scheme.surfaceVariant,
-                    iconContent = scheme.onSurfaceVariant,
+                    iconContainer = scheme.primaryContainer,
+                    iconContent = scheme.onPrimaryContainer,
                     sourceKey = SourceDiagnostics,
                     onClick = onOpenDiagnostics,
                 )

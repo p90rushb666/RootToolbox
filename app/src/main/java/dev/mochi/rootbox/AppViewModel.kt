@@ -56,6 +56,9 @@ data class InstallUi(
 data class ModuleUpdateUi(
     val items: List<ModuleUpdateItem> = emptyList(),
     val loading: Boolean = false,
+    /** 检查进度：已完成 / 总数，用于实时进度条。 */
+    val checked: Int = 0,
+    val total: Int = 0,
     val error: String? = null,
     val checkedAt: Long? = null,
     val files: List<DownloadedModule> = emptyList(),
@@ -613,7 +616,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private suspend fun checkModuleUpdates() {
         _state.update {
-            it.copy(moduleUpdates = it.moduleUpdates.copy(loading = true, error = null))
+            it.copy(moduleUpdates = it.moduleUpdates.copy(loading = true, error = null, checked = 0, total = 0))
         }
         val (modules, scanError) = ModuleUpdateChecker.scan(_state.value.root?.granted == true)
         if (scanError != null) {
@@ -639,10 +642,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             }.thenBy { it.name.lowercase() },
                         )
                         .map { ModuleUpdateItem(it) },
+                    total = modules.size,
+                    checked = 0,
                 ),
             )
         }
-        val items = ModuleUpdateChecker.check(modules)
+        val items = ModuleUpdateChecker.check(modules) { done, total ->
+            _state.update { state ->
+                state.copy(
+                    moduleUpdates = state.moduleUpdates.copy(checked = done, total = total),
+                )
+            }
+        }
         _state.update {
             it.copy(
                 moduleUpdates = it.moduleUpdates.copy(

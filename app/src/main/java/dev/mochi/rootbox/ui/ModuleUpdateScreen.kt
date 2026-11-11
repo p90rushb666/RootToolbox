@@ -92,7 +92,8 @@ fun ModuleUpdateScreen(
     MochiLazyCompactTitleScaffold(
         title = "模块更新",
         subtitle = when {
-            ui.loading -> "正在检查…"
+            ui.loading && ui.total > 0 -> "正在检查 ${ui.checked}/${ui.total}"
+            ui.loading -> "正在扫描模块…"
             ui.checkedAt == null -> "点下方按钮手动检查"
             else -> "${ui.items.size} 个模块 · ${formatDateTime(ui.checkedAt)}"
         },
@@ -114,6 +115,11 @@ fun ModuleUpdateScreen(
                         style = MochiButtonStyle.Filled,
                         enabled = !ui.loading,
                     ) { Text(if (ui.loading) "检查中…" else "检查更新") }
+                }
+            }
+            if (ui.loading) {
+                row(key = "check-progress") {
+                    CheckProgress(checked = ui.checked, total = ui.total)
                 }
             }
             if (ui.error != null) {
@@ -397,4 +403,40 @@ private fun ModuleUpdateRow(item: ModuleUpdateItem, checking: Boolean) {
             }
         },
     )
+}
+
+/** 检查更新时的实时进度：进度环 + 已完成/总数 + 进度条。 */
+@Composable
+private fun CheckProgress(checked: Int, total: Int) {
+    val fraction = if (total > 0) checked.toFloat() / total.toFloat() else 0f
+    val animated by animateFloatAsState(
+        targetValue = fraction.coerceIn(0f, 1f),
+        animationSpec = tween(durationMillis = 180),
+        label = "check-progress",
+    )
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            MochiProgressRing(
+                progress = if (total > 0) animated else null,
+                size = 28.dp,
+            )
+            Spacer(Modifier.width(12.dp))
+            Column {
+                Text("正在检查模块", style = MochiTheme.textStyles.bodyMedium)
+                Text(
+                    if (total > 0) "已检查 $checked / $total" else "正在读取模块列表…",
+                    style = MochiTheme.textStyles.footnote,
+                    color = MochiTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (total > 0) {
+            Spacer(Modifier.height(10.dp))
+            MochiProgressBar(animated)
+        }
+    }
 }
