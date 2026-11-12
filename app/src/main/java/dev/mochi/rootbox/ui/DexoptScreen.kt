@@ -55,7 +55,6 @@ import ui.feice.mochi.basic.MochiDialogAction
 import ui.feice.mochi.basic.MochiDialogActionRole
 import ui.feice.mochi.basic.MochiProgressBar
 import ui.feice.mochi.basic.MochiProgressRing
-import ui.feice.mochi.basic.MochiSwitch
 import ui.feice.mochi.basic.Text
 import ui.feice.mochi.icons.MochiIonicon
 import ui.feice.mochi.list.MochiListRow
@@ -65,8 +64,8 @@ import ui.feice.mochi.navigation.MochiLazyCompactTitleScaffold
 import ui.feice.mochi.theme.MochiTheme
 
 /**
- * dex2oat 编译：选择范围（当前用户 / 所有用户 / 所有用户+系统）、模式（快速 / 热点 / 全量）、
- * 线程（系统档位 / 2 / 4 / 8 / 全开），可勾选单个应用；进度实时显示并持久化，中断后可继续。
+ * dex2oat 编译：选择范围（用户应用 / 全部应用）、模式（快速 / 热点 / 全量）、线程（系统档位 / 2 / 4 / 8 / 全开）。
+ * 开始按钮在顶部，下方小字汇总当前设置；进度实时显示并持久化，中断后可继续。
  */
 @Composable
 fun DexoptScreen(
@@ -82,7 +81,6 @@ fun DexoptScreen(
     val context = LocalContext.current
     val scheme = MochiTheme.colorScheme
 
-    // 从系统设置返回时刷新权限状态
     var permissionTick by remember { mutableIntStateOf(0) }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -120,19 +118,59 @@ fun DexoptScreen(
     }
 
     var confirmClearJob by remember { mutableStateOf(false) }
-    var showAllApps by remember { mutableStateOf(false) }
     var confirmDiscard by remember { mutableStateOf(false) }
+
+    val scopeCount = if (ui.scope.includeSystem) ui.apps.size else ui.apps.count { !it.isSystem }
 
     MochiLazyCompactTitleScaffold(
         title = "dex2oat 编译",
         subtitle = when {
             runtime.running -> "编译中 ${runtime.done + runtime.failed}/${runtime.total}"
             ui.savedJob?.remaining()?.isNotEmpty() == true -> "有未完成任务，可继续"
-            else -> "选择应用与参数后开始"
+            else -> "选择参数后点顶部「开始编译」"
         },
         navigationIcon = navigationIcon,
     ) {
-        // 运行 / 暂停状态卡
+        // 开始编译 + 当前设置摘要（最顶部）
+        item(key = "start") {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 10.dp),
+            ) {
+                MochiButton(
+                    onClick = { viewModel.startDexopt() },
+                    style = MochiButtonStyle.Filled,
+                    enabled = !runtime.running && scopeCount > 0 && state.root?.granted == true,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        when {
+                            state.root?.granted != true -> "需要 Root 权限"
+                            runtime.running -> "正在编译…"
+                            scopeCount == 0 -> "没有可编译的应用"
+                            else -> "开始编译 $scopeCount 个应用"
+                        },
+                    )
+                }
+                Text(
+                    "范围：${ui.scope.label}（$scopeCount 个） · 模式：${ui.mode.label} · 线程：${ui.threads.label}",
+                    style = MochiTheme.textStyles.footnote,
+                    color = scheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+                if (ui.loadingApps) {
+                    Text(
+                        "正在读取应用列表…",
+                        style = MochiTheme.textStyles.footnote,
+                        color = scheme.outline,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
+            }
+        }
+
+        // 运行 / 暂停 / 完成状态卡
         DexoptStatusCard(
             ui = ui,
             onPause = { viewModel.pauseDexopt() },
@@ -143,7 +181,7 @@ fun DexoptScreen(
         mochiListSection(
             key = "scope",
             header = "编译范围",
-            footer = "「所有用户」会遍历设备上的每个用户；「所有用户 + 系统」包含系统应用，耗时最长。",
+            footer = "「用户应用」只编译第三方应用；「全部应用」额外包含系统应用，数量更多、耗时更长。",
         ) {
             row(key = "scope-chips") {
                 MochiChipGroup(
@@ -152,19 +190,14 @@ fun DexoptScreen(
                     contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
                 ) {
                     DexoptScope.entries.forEach { scope ->
+                        val count = if (scope.includeSystem) ui.apps.size else ui.apps.count { !it.isSystem }
                         MochiChip(
-                            label = scope.label,
+                            label = "${scope.label}（$count）",
                             selected = ui.scope == scope,
                             onClick = { viewModel.setDexoptScope(scope) },
                         )
                     }
                 }
-            }
-            row(key = "scope-desc") {
-                MochiListRow(
-                    title = ui.scope.label,
-                    subtitle = ui.scope.description,
-                )
             }
         }
 
@@ -180,6 +213,7 @@ fun DexoptScreen(
                             label = mode.label,
                             selected = ui.mode == mode,
                             onClick = { viewModel.setDexoptMode(mode) },
+                            leadingIcon = { MochiIonicon(mode.iconName) },
                         )
                     }
                 }
@@ -208,79 +242,7 @@ fun DexoptScreen(
                             label = threads.label,
                             selected = ui.threads == threads,
                             onClick = { viewModel.setDexoptThreads(threads) },
-                        )
-                    }
-                }
-            }
-        }
-
-        mochiListSection(
-            key = "apps",
-            header = "应用（已选 ${ui.selected.size} / 共 ${ui.apps.size}）",
-            footer = if (ui.error != null) ui.error else "默认勾选当前用户的应用；可单独取消或全选。",
-        ) {
-            row(key = "app-actions") {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 18.dp, vertical = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    MochiButton(
-                        onClick = { viewModel.selectAllDexoptApps() },
-                        style = MochiButtonStyle.Tonal,
-                        enabled = !runtime.running,
-                    ) { Text("全选") }
-                    MochiButton(
-                        onClick = { viewModel.clearDexoptSelection() },
-                        style = MochiButtonStyle.Tonal,
-                        enabled = !runtime.running,
-                    ) { Text("清空") }
-                    if (ui.loadingApps) {
-                        Text(
-                            "读取中…",
-                            style = MochiTheme.textStyles.footnote,
-                            color = scheme.onSurfaceVariant,
-                            modifier = Modifier.align(Alignment.CenterVertically),
-                        )
-                    }
-                }
-            }
-            val visibleApps = if (showAllApps) ui.apps else ui.apps.take(20)
-            visibleApps.forEach { app ->
-                row(key = app.packageName) {
-                    MochiListRow(
-                        title = app.label,
-                        subtitle = app.packageName + if (app.isSystem) " · 系统应用" else "",
-                        trailing = {
-                            MochiSwitch(
-                                ui.selected.contains(app.packageName),
-                                { viewModel.toggleDexoptApp(app.packageName) },
-                            )
-                        },
-                    )
-                }
-            }
-        }
-
-        if (ui.apps.size > 20) {
-            item(key = "apps-more") {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 18.dp, vertical = 10.dp),
-                ) {
-                    MochiButton(
-                        onClick = { showAllApps = !showAllApps },
-                        style = MochiButtonStyle.Tonal,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(
-                            if (showAllApps) {
-                                "收起（只显示前 20 个）"
-                            } else {
-                                "展开全部 ${ui.apps.size} 个应用"
-                            },
+                            leadingIcon = { MochiIonicon(threads.iconName) },
                         )
                     }
                 }
@@ -357,38 +319,6 @@ fun DexoptScreen(
             }
         }
 
-        item(key = "start") {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 18.dp, vertical = 8.dp),
-            ) {
-                MochiButton(
-                    onClick = { viewModel.startDexopt() },
-                    style = MochiButtonStyle.Filled,
-                    enabled = !runtime.running && ui.selected.isNotEmpty() && state.root?.granted == true,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(
-                        when {
-                            state.root?.granted != true -> "需要 Root 权限"
-                            runtime.running -> "正在编译…"
-                            ui.selected.isEmpty() -> "请先选择应用"
-                            else -> "开始编译 ${ui.selected.size} 个应用"
-                        },
-                    )
-                }
-                if (ui.savedJob != null && ui.savedJob.remaining().isEmpty()) {
-                    Spacer(Modifier.height(8.dp))
-                    MochiButton(
-                        onClick = { confirmClearJob = true },
-                        style = MochiButtonStyle.Tonal,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("清除上次任务记录") }
-                }
-            }
-        }
-
         item(key = "bottom-space") {
             Spacer(Modifier.height(LocalMochiBottomBarInset.current + 24.dp))
         }
@@ -439,84 +369,143 @@ private fun LazyListScope.DexoptStatusCard(
 ) {
     val runtime = ui.runtime
     val saved = ui.savedJob
-    val paused = !runtime.running && saved != null && saved.remaining().isNotEmpty()
 
-    if (!runtime.running && saved == null) {
-        item {
+    when {
+        runtime.running -> runningItem(runtime, onPause)
+
+        saved == null -> item {
             MochiListRow(
                 title = "尚未开始",
-                subtitle = "选择范围、模式、线程并勾选应用，然后点底部「开始编译」。",
+                subtitle = "选择范围、模式、线程后，点顶部「开始编译」。",
                 leading = { MochiIonicon("cube") },
             )
         }
-        return
-    }
 
-    if (runtime.running) {
-        item {
-            val scheme = MochiTheme.colorScheme
-            val fraction = if (runtime.total > 0) {
-                (runtime.done + runtime.failed).toFloat() / runtime.total.toFloat()
-            } else 0f
-            val animated by animateFloatAsState(
-                targetValue = fraction.coerceIn(0f, 1f),
-                animationSpec = tween(200),
-                label = "dexopt-progress",
-            )
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 18.dp, vertical = 12.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    MochiProgressRing(progress = animated, size = 34.dp)
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            runtime.currentLabel ?: "准备中…",
-                            style = MochiTheme.textStyles.bodyLarge,
-                        )
-                        Text(
-                            "${runtime.done + runtime.failed} / ${runtime.total} · 失败 ${runtime.failed}",
-                            style = MochiTheme.textStyles.footnote,
-                            color = scheme.onSurfaceVariant,
-                        )
-                    }
-                    MochiButton(onClick = onPause, style = MochiButtonStyle.Tonal) { Text("暂停") }
-                }
-                Spacer(Modifier.height(10.dp))
-                MochiProgressBar(animated)
-                runtime.currentPackage?.let {
+        saved.finished -> finishedItem(saved, onDiscard)
+
+        else -> pausedItem(saved, onResume, onDiscard)
+    }
+}
+
+private fun LazyListScope.runningItem(runtime: dev.mochi.rootbox.core.DexoptRuntime, onPause: () -> Unit) {
+    item {
+        val scheme = MochiTheme.colorScheme
+        val fraction = if (runtime.total > 0) {
+            (runtime.done + runtime.failed).toFloat() / runtime.total.toFloat()
+        } else 0f
+        val animated by animateFloatAsState(
+            targetValue = fraction.coerceIn(0f, 1f),
+            animationSpec = tween(200),
+            label = "dexopt-progress",
+        )
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 12.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                MochiProgressRing(progress = animated, size = 34.dp)
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(runtime.currentLabel ?: "准备中…", style = MochiTheme.textStyles.bodyLarge)
                     Text(
-                        it,
-                        style = MochiTheme.textStyles.footnote.copy(fontFamily = FontFamily.Monospace),
-                        color = scheme.outline,
-                        modifier = Modifier.padding(top = 6.dp),
+                        "${runtime.done + runtime.failed} / ${runtime.total} · 失败 ${runtime.failed}",
+                        style = MochiTheme.textStyles.footnote,
+                        color = scheme.onSurfaceVariant,
                     )
                 }
+                MochiButton(onClick = onPause, style = MochiButtonStyle.Tonal) { Text("暂停") }
             }
-        }
-    } else if (paused) {
-        item {
-            val scheme = MochiTheme.colorScheme
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 18.dp, vertical = 12.dp),
-            ) {
-                Text("上次任务未完成", style = MochiTheme.textStyles.bodyLarge)
+            Spacer(Modifier.height(10.dp))
+            MochiProgressBar(animated)
+            runtime.currentPackage?.let {
                 Text(
-                    "已完成 ${saved.done.size} / ${saved.packages.size}，剩余 ${saved.remaining().size} 个应用",
-                    style = MochiTheme.textStyles.footnote,
-                    color = scheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 2.dp),
+                    it,
+                    style = MochiTheme.textStyles.footnote.copy(fontFamily = FontFamily.Monospace),
+                    color = scheme.outline,
+                    modifier = Modifier.padding(top = 6.dp),
                 )
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    MochiButton(onClick = onResume, style = MochiButtonStyle.Filled) { Text("继续") }
-                    MochiButton(onClick = onDiscard, style = MochiButtonStyle.Tonal) { Text("放弃") }
-                }
             }
         }
     }
 }
+
+private fun LazyListScope.pausedItem(
+    saved: dev.mochi.rootbox.core.DexoptJob,
+    onResume: () -> Unit,
+    onDiscard: () -> Unit,
+) {
+    item {
+        val scheme = MochiTheme.colorScheme
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 12.dp),
+        ) {
+            Text("上次任务未完成", style = MochiTheme.textStyles.bodyLarge)
+            Text(
+                "已完成 ${saved.done.size} / ${saved.packages.size}，剩余 ${saved.remaining().size} 个应用",
+                style = MochiTheme.textStyles.footnote,
+                color = scheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                MochiButton(onClick = onResume, style = MochiButtonStyle.Filled) { Text("继续") }
+                MochiButton(onClick = onDiscard, style = MochiButtonStyle.Tonal) { Text("放弃") }
+            }
+        }
+    }
+}
+
+private fun LazyListScope.finishedItem(
+    saved: dev.mochi.rootbox.core.DexoptJob,
+    onDiscard: () -> Unit,
+) {
+    item {
+        val scheme = MochiTheme.colorScheme
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 12.dp),
+        ) {
+            Text("编译完成", style = MochiTheme.textStyles.bodyLarge)
+            Text(
+                "成功 ${saved.done.size} · 失败 ${saved.failed.size}",
+                style = MochiTheme.textStyles.footnote,
+                color = if (saved.failed.isEmpty()) scheme.onSurfaceVariant else scheme.error,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+            if (saved.failed.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                MochiButton(onClick = onDiscard, style = MochiButtonStyle.Tonal) { Text("清除记录") }
+            }
+        }
+    }
+
+    // 失败详情：展开每个失败应用的具体原因，方便排查。
+    saved.failed.forEach { (pkg, error) ->
+        item(key = "fail-$pkg") {
+            MochiListRow(
+                title = saved.labels[pkg] ?: pkg,
+                subtitle = error,
+                destructive = true,
+                leading = { MochiIonicon("alert-circle") },
+            )
+        }
+    }
+}
+
+private val DexoptMode.iconName: String
+    get() = when (this) {
+        DexoptMode.QUICKEN -> "flash-outline"
+        DexoptMode.SPEED_PROFILE -> "flame"
+        DexoptMode.SPEED -> "speedometer"
+    }
+
+private val DexoptThreads.iconName: String
+    get() = when (this) {
+        DexoptThreads.SYSTEM -> "settings"
+        DexoptThreads.ALL -> "flash"
+        else -> "options"
+    }

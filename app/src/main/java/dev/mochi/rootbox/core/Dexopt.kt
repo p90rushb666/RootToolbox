@@ -21,10 +21,9 @@ data class DexoptApp(
     val isSystem: Boolean,
 )
 
-enum class DexoptScope(val label: String, val description: String) {
-    CURRENT_USER("当前用户", "只编译当前用户安装的应用"),
-    ALL_USERS("所有用户", "编译设备上每个用户的应用"),
-    ALL_USERS_SYSTEM("所有用户 + 系统", "包含系统应用，耗时最长"),
+enum class DexoptScope(val label: String, val description: String, val includeSystem: Boolean) {
+    CURRENT_USER("用户应用", "只编译第三方（非系统）应用", false),
+    ALL_USERS_SYSTEM("全部应用", "包含系统应用，耗时更长", true),
 }
 
 enum class DexoptMode(val cmd: String, val label: String, val description: String) {
@@ -181,12 +180,7 @@ object DexoptRunner {
     private suspend fun runJob(context: Context, initial: DexoptJob) {
         val mode = DexoptMode.entries.firstOrNull { it.name == initial.mode } ?: DexoptMode.SPEED_PROFILE
         val threads = DexoptThreads.entries.firstOrNull { it.value == initial.threads } ?: DexoptThreads.SYSTEM
-        val scopeKind = DexoptScope.entries.firstOrNull { it.name == initial.scope } ?: DexoptScope.CURRENT_USER
 
-        val users = when (scopeKind) {
-            DexoptScope.CURRENT_USER -> listOf((android.os.Process.myUid() / 100_000))
-            else -> listUsers()
-        }
         val packages = initial.remaining()
         val total = packages.size
         _state.value = DexoptRuntime(
@@ -220,18 +214,17 @@ object DexoptRunner {
                     failed = job.failed.size,
                 )
                 var lastError: String? = null
-                for (userId in users) {
-                    if (cancelled) break
-                    val result = Shell.su(
-                        "cmd package compile -m ${mode.cmd} -f --user $userId $pkg",
-                        timeoutMs = 600_000L,
-                    )
-                    if (!result.ok) lastError = result.brief().take(200)
-                }
+                // `cmd package compile` 不支持 `--user`（会报 unknown option 导致每次都失败），
+                // 去掉后默认编译当前用户，命令才能真正执行。
+                val result = Shell.su(
+                    "cmd package compile -m ${mode.cmd} -f $pkg",
+                    timeoutMs = 600_000L,
+                )
+                if (!result.ok) lastError = result.brief().take(400)
                 job = if (lastError == null) {
                     job.copy(done = job.done + pkg)
                 } else {
-                    job.copy(failed = job.failed + (pkg to lastError!!))
+                    job.copy(failed = job.failed + (pkg to lastError))
                 }
                 DexoptStore.save(context, job)
                 _state.value = _state.value.copy(
@@ -271,12 +264,5 @@ object DexoptRunner {
             process.waitFor()
             text.takeIf { it.isNotEmpty() }
         }.getOrNull()
-    }
-
-    /** `pm list users` 解析出所有用户 id。 */
-    private suspend fun listUsers(): List<Int> {
-        val result = Shell.su("pm list users")
-        val ids = Regex("""UserInfo\{(\d+):""").findAll(result.out).map { it.groupValues[1].toInt() }.toList()
-        return ids.ifEmpty { listOf((android.os.Process.myUid() / 100_000)) }
     }
 }

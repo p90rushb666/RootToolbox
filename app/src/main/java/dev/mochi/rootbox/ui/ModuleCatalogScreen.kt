@@ -20,12 +20,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import dev.mochi.rootbox.AppState
 import dev.mochi.rootbox.AppViewModel
 import dev.mochi.rootbox.CatalogUi
 import dev.mochi.rootbox.DownloadProgress
+import dev.mochi.rootbox.core.CatalogCategory
 import dev.mochi.rootbox.core.CatalogDownload
 import dev.mochi.rootbox.core.CatalogModule
 import dev.mochi.rootbox.core.ModuleRelease
@@ -48,27 +48,26 @@ import ui.feice.mochi.navigation.MochiLazyCompactTitleScaffold
 import ui.feice.mochi.theme.MochiTheme
 
 /**
- * 模块下载：按分类分组、组内按名称字母序展示常见的 Root 管理器 / Zygisk / LSPosed / 隐藏 /
- * 元模块 / TEE 模拟 / 广告屏蔽，联网查最新 Release，支持下载进度与「打开」。
+ * 模块下载（一级）：顶部显示索引进度，下面是分类列表；索引就绪前分类不可进入。
  */
 @Composable
 fun ModuleCatalogScreen(
     state: AppState,
     viewModel: AppViewModel,
     navigationIcon: @Composable () -> Unit,
+    onOpenCategory: (CatalogCategory) -> Unit,
     onOpenDownloads: () -> Unit,
     showToast: (String) -> Unit,
 ) {
     LaunchedEffect(Unit) { viewModel.loadCatalog() }
     val ui = state.catalog
     val scheme = MochiTheme.colorScheme
-    val context = LocalContext.current
 
     MochiLazyCompactTitleScaffold(
         title = "模块下载",
         subtitle = when {
-            ui.loadingIndex -> "正在更新索引…"
-            ui.loadingReleases -> "正在查询最新版本 ${ui.releaseChecked}/${ui.releaseTotal}"
+            ui.loadingIndex -> "正在加载索引…"
+            ui.loadingReleases -> "正在查询版本 ${ui.releaseChecked}/${ui.releaseTotal}"
             else -> "${ui.index.modules.size} 个模块 · 索引来源 ${ui.indexSource}"
         },
         navigationIcon = navigationIcon,
@@ -80,6 +79,56 @@ fun ModuleCatalogScreen(
             ) { MochiIonicon("folder-open", contentDescription = "下载管理") }
         },
     ) {
+        // 顶部索引状态与进度
+        mochiListSection(
+            key = "index",
+            header = "索引",
+            footer = "索引来自项目仓库的 modules/index.json，离线时使用安装包内置副本；版本号由 GitHub Release 查询，缓存 6 小时。",
+        ) {
+            row(key = "source") {
+                MochiListRow(
+                    title = "索引来源",
+                    subtitle = when {
+                        ui.loadingIndex -> "正在联网更新索引…"
+                        ui.indexAt > 0 -> "更新于 ${formatDateTime(ui.indexAt)}"
+                        else -> "安装包内置副本，尚未联网更新"
+                    },
+                    value = ui.indexSource,
+                    loading = ui.loadingIndex,
+                )
+            }
+            if (ui.loadingReleases) {
+                row(key = "release-progress") {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 18.dp, vertical = 10.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            MochiProgressRing(
+                                progress = if (ui.releaseTotal > 0) {
+                                    ui.releaseChecked.toFloat() / ui.releaseTotal.toFloat()
+                                } else null,
+                                size = 24.dp,
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                "查询版本 ${ui.releaseChecked}/${ui.releaseTotal}",
+                                style = MochiTheme.textStyles.footnote,
+                                color = scheme.onSurfaceVariant,
+                            )
+                        }
+                        if (ui.releaseTotal > 0) {
+                            Spacer(Modifier.height(8.dp))
+                            MochiProgressBar(
+                                ui.releaseChecked.toFloat() / ui.releaseTotal.toFloat(),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         if (ui.error != null) {
             item(key = "error") {
                 MochiListRow(
@@ -91,63 +140,22 @@ fun ModuleCatalogScreen(
             }
         }
 
-        ui.index.grouped().forEach { (category, modules) ->
-            mochiListSection(key = "cat-${category.id}", header = category.title) {
-                modules.forEach { module ->
-                    row(key = module.id) {
-                        CatalogModuleRow(
-                            module = module,
-                            release = ui.releases[module.repo],
-                            progress = ui.downloading[module.id],
-                            file = ui.files.firstOrNull { it.name.startsWith("${module.id}-") },
-                            onDownload = { viewModel.downloadCatalogModule(module) },
-                            onCancel = { viewModel.cancelCatalogDownload(module.id) },
-                            onOpen = { file ->
-                                if (!openCatalogFile(context, file.path)) {
-                                    showToast("没有可打开该文件的应用")
-                                }
-                            },
-                        )
-                    }
-                }
-            }
-        }
-
+        // 分类列表
         mochiListSection(
-            key = "index-info",
-            header = "索引",
-            footer = "索引来自项目仓库的 modules/index.json，离线时使用安装包内置副本；版本号由 GitHub Release 查询，缓存 6 小时。",
+            key = "categories",
+            header = "分类",
+            footer = if (!ui.indexReady) "索引加载完成后才可进入分类" else null,
         ) {
-            row(key = "source") {
-                MochiListRow(
-                    title = "索引来源",
-                    subtitle = if (ui.indexAt > 0) {
-                        "更新于 ${formatDateTime(ui.indexAt)}"
-                    } else {
-                        "安装包内置副本，尚未联网更新"
-                    },
-                    value = ui.indexSource,
-                )
-            }
-            row(key = "refresh") {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 18.dp, vertical = 14.dp),
-                ) {
-                    MochiButton(
-                        onClick = { viewModel.loadCatalog(force = true) },
-                        style = MochiButtonStyle.Tonal,
-                        enabled = !ui.loadingIndex && !ui.loadingReleases,
-                    ) {
-                        Text(
-                            when {
-                                ui.loadingIndex -> "更新索引中…"
-                                ui.loadingReleases -> "查询版本中…"
-                                else -> "重新检查全部版本"
-                            },
-                        )
-                    }
+            ui.index.grouped().forEach { (category, modules) ->
+                row(key = "cat-${category.id}") {
+                    MochiListRow(
+                        title = category.title,
+                        subtitle = "${modules.size} 个模块",
+                        chevron = true,
+                        enabled = ui.indexReady,
+                        leading = { MochiIonicon(categoryIcon(category.id)) },
+                        onClick = { onOpenCategory(category) },
+                    )
                 }
             }
         }
@@ -158,7 +166,54 @@ fun ModuleCatalogScreen(
     }
 }
 
-/** 单个模块：名称 / 说明 / 仓库 / 版本 + 下载按钮或进度。 */
+/** 模块下载（二级）：某个分类下的模块列表，紧凑行 + 下载按钮在最右。 */
+@Composable
+fun ModuleCategoryScreen(
+    category: CatalogCategory,
+    state: AppState,
+    viewModel: AppViewModel,
+    navigationIcon: @Composable () -> Unit,
+    showToast: (String) -> Unit,
+) {
+    val ui = state.catalog
+    val context = LocalContext.current
+    val modules = ui.index.grouped().firstOrNull { it.first.id == category.id }?.second.orEmpty()
+
+    MochiLazyCompactTitleScaffold(
+        title = category.title,
+        subtitle = when {
+            ui.loadingReleases -> "正在查询版本 ${ui.releaseChecked}/${ui.releaseTotal}"
+            else -> "${modules.size} 个模块"
+        },
+        navigationIcon = navigationIcon,
+    ) {
+        mochiListSection(key = "modules") {
+            modules.forEach { module ->
+                row(key = module.id) {
+                    CatalogModuleRow(
+                        module = module,
+                        release = ui.releases[module.repo],
+                        progress = ui.downloading[module.id],
+                        file = ui.files.firstOrNull { it.name.startsWith("${module.id}-") },
+                        onDownload = { viewModel.downloadCatalogModule(module) },
+                        onCancel = { viewModel.cancelCatalogDownload(module.id) },
+                        onOpen = { file ->
+                            if (!openCatalogFile(context, file.path)) {
+                                showToast("没有可打开该文件的应用")
+                            }
+                        },
+                    )
+                }
+            }
+        }
+
+        item(key = "bottom-space") {
+            Spacer(Modifier.height(LocalMochiBottomBarInset.current + 24.dp))
+        }
+    }
+}
+
+/** 单个模块的紧凑行：名称 + 版本在最左，下载/打开/取消按钮在最右。 */
 @Composable
 private fun CatalogModuleRow(
     module: CatalogModule,
@@ -171,15 +226,17 @@ private fun CatalogModuleRow(
 ) {
     val scheme = MochiTheme.colorScheme
     val textStyles = MochiTheme.textStyles
+    val version = release?.tag?.takeIf { it.isNotBlank() }
+
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 18.dp, vertical = 12.dp),
+            .padding(horizontal = 18.dp, vertical = 8.dp),
     ) {
-        Row(verticalAlignment = Alignment.Top) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(module.name, style = textStyles.bodyLarge)
+                    Text(module.name, style = textStyles.bodyMedium)
                     if (module.note != null) {
                         Spacer(Modifier.width(6.dp))
                         StatusPill(
@@ -190,115 +247,62 @@ private fun CatalogModuleRow(
                         )
                     }
                 }
-                if (module.description != null) {
-                    Text(
-                        module.description,
-                        style = textStyles.footnote,
-                        color = scheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 2.dp),
-                    )
-                }
                 Text(
-                    module.repo,
-                    style = textStyles.footnote.copy(fontFamily = FontFamily.Monospace),
-                    color = scheme.outline,
-                    modifier = Modifier.padding(top = 3.dp),
+                    buildString {
+                        append(module.repo)
+                        if (version != null) append(" · $version")
+                        release?.asset?.let { append(" · ${formatBytes(it.size)}") }
+                    },
+                    style = textStyles.footnote,
+                    color = scheme.onSurfaceVariant,
+                    maxLines = 1,
+                    modifier = Modifier.padding(top = 2.dp),
                 )
-                if (module.note != null) {
+                if (release?.error != null && progress == null && file == null) {
                     Text(
-                        module.note,
+                        release.error,
                         style = textStyles.footnote,
-                        color = scheme.onTertiaryContainer,
+                        color = scheme.error,
+                        maxLines = 1,
                         modifier = Modifier.padding(top = 2.dp),
                     )
                 }
             }
-            Column(horizontalAlignment = Alignment.End) {
-                val version = release?.tag?.takeIf { it.isNotBlank() }
-                Text(
-                    when {
-                        progress != null -> "下载中"
-                        file != null -> "已下载"
-                        version != null -> version
-                        release?.error != null -> "查询失败"
-                        else -> "…"
-                    },
-                    style = textStyles.footnote,
-                    color = when {
-                        release?.error != null && progress == null && file == null -> scheme.error
-                        else -> scheme.onSurfaceVariant
-                    },
-                )
-                release?.publishedAt?.takeIf { it.isNotBlank() }?.let { date ->
-                    Text(
-                        date.take(10),
-                        style = textStyles.footnote,
-                        color = scheme.outline,
-                        modifier = Modifier.padding(top = 2.dp),
-                    )
+
+            when {
+                progress != null -> MochiButton(onClick = onCancel, style = MochiButtonStyle.Tonal) {
+                    Text("取消")
                 }
+                file != null -> MochiButton(
+                    onClick = { onOpen(file) },
+                    style = MochiButtonStyle.Tonal,
+                ) { Text("打开") }
+                else -> MochiButton(
+                    onClick = onDownload,
+                    style = MochiButtonStyle.Filled,
+                    enabled = release?.ok == true,
+                ) { Text(if (release?.ok == true) "下载" else "…") }
             }
         }
 
         if (progress != null) {
-            DownloadBlock(progress = progress, onCancel = onCancel)
-        } else if (release?.error != null && file == null) {
-            Text(
-                release.error!!,
-                style = textStyles.footnote,
-                color = scheme.error,
-                modifier = Modifier.padding(top = 6.dp),
-            )
-        } else {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(top = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                if (file != null) {
-                    MochiButton(
-                        onClick = { onOpen(file) },
-                        style = MochiButtonStyle.Tonal,
-                    ) { Text("打开") }
-                    Text(
-                        formatBytes(file.size),
-                        style = textStyles.footnote,
-                        color = scheme.onSurfaceVariant,
-                        modifier = Modifier.align(Alignment.CenterVertically),
-                    )
-                } else {
-                    MochiButton(
-                        onClick = onDownload,
-                        style = MochiButtonStyle.Filled,
-                        enabled = release?.ok == true,
-                    ) { Text(if (release?.ok == true) "下载" else "暂不可用") }
-                    if (release?.asset != null) {
-                        Text(
-                            "${release.asset.name} · ${formatBytes(release.asset.size)}",
-                            style = textStyles.footnote,
-                            color = scheme.onSurfaceVariant,
-                            modifier = Modifier.align(Alignment.CenterVertically),
-                        )
-                    }
-                }
-            }
+            DownloadBlock(progress)
         }
     }
 }
 
 @Composable
-private fun DownloadBlock(progress: DownloadProgress, onCancel: () -> Unit) {
+private fun DownloadBlock(progress: DownloadProgress) {
     val animated by animateFloatAsState(
         targetValue = progress.fraction.coerceIn(0f, 1f),
         animationSpec = tween(180),
         label = "catalog-download",
     )
-    Column(Modifier.padding(top = 10.dp)) {
+    Column(Modifier.padding(top = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             MochiProgressRing(
                 progress = if (progress.total > 0) animated else null,
-                size = 26.dp,
+                size = 22.dp,
             )
             Spacer(Modifier.width(10.dp))
             Text(
@@ -311,10 +315,9 @@ private fun DownloadBlock(progress: DownloadProgress, onCancel: () -> Unit) {
                 color = MochiTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f),
             )
-            MochiButton(onClick = onCancel, style = MochiButtonStyle.Tonal) { Text("取消") }
         }
         if (progress.total > 0) {
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(6.dp))
             MochiProgressBar(animated)
         }
     }
@@ -446,4 +449,15 @@ fun ModuleDownloadsScreen(
             ),
         ),
     )
+}
+
+private fun categoryIcon(id: String): String = when (id) {
+    "root" -> "key"
+    "zygisk" -> "git-branch"
+    "lsposed" -> "cube"
+    "hide" -> "lock-closed"
+    "meta" -> "layers"
+    "tee" -> "shield-checkmark"
+    "ad" -> "ban"
+    else -> "apps"
 }

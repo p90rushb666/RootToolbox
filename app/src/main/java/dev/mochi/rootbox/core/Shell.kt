@@ -63,10 +63,10 @@ object Shell {
             } catch (t: Throwable) {
                 ShellResult(code = -2, out = "", err = "${t.javaClass.simpleName}: ${t.message}")
             }
-            DiagLog.info(
-                "shell",
-                "${command.firstOrNull() ?: "?"} -> ${result.brief()} (${System.currentTimeMillis() - started}ms)",
-            )
+            val summary =
+                "${command.firstOrNull() ?: "?"} -> ${result.brief()} (${System.currentTimeMillis() - started}ms)"
+            // 命令失败（退出码非 0 / 超时 / 无法启动）要记 error，否则诊断页里一片 info 看不到问题。
+            if (result.ok) DiagLog.info("shell", summary) else DiagLog.error("shell", summary)
             result
         }
 

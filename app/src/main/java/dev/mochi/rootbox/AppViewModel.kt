@@ -86,16 +86,19 @@ data class ModuleUpdateUi(
 
 /** dex2oat 编译页的状态。 */
 data class DexoptUi(
+    /** 全部应用（含系统），编译对象按 [scope] 过滤。 */
     val apps: List<DexoptApp> = emptyList(),
     val loadingApps: Boolean = false,
-    val selected: Set<String> = emptySet(),
     val scope: DexoptScope = DexoptScope.CURRENT_USER,
     val mode: DexoptMode = DexoptMode.SPEED_PROFILE,
     val threads: DexoptThreads = DexoptThreads.SYSTEM,
     val runtime: DexoptRuntime = DexoptRuntime(),
     val savedJob: DexoptJob? = null,
     val error: String? = null,
-)
+) {
+    /** 当前范围要编译的应用。 */
+    val scopedApps: List<DexoptApp> get() = apps.filter { scope.includeSystem || !it.isSystem }
+}
 
 /** 模块下载页的状态。 */
 data class CatalogUi(
@@ -103,6 +106,8 @@ data class CatalogUi(
     val indexSource: String = "内置",
     val indexAt: Long = 0L,
     val loadingIndex: Boolean = false,
+    /** 索引文件是否已就绪（本地缓存 / 内置副本 / 联网更新任一完成）；就绪前分类不可进入。 */
+    val indexReady: Boolean = false,
     val releases: Map<String, ModuleRelease> = emptyMap(),
     val loadingReleases: Boolean = false,
     val releaseChecked: Int = 0,
@@ -716,9 +721,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (_state.value.dexopt.loadingApps) return
         viewModelScope.launch {
             _state.update { it.copy(dexopt = it.dexopt.copy(loadingApps = true, error = null)) }
-            val includeSystem = _state.value.dexopt.scope == DexoptScope.ALL_USERS_SYSTEM
             val apps = withContext(Dispatchers.IO) {
-                runCatching { listDexoptApps(getApplication(), includeSystem) }
+                runCatching { listDexoptApps(getApplication(), includeSystem = true) }
             }
             _state.update { state ->
                 val list = apps.getOrNull().orEmpty()
@@ -726,11 +730,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     dexopt = state.dexopt.copy(
                         apps = list,
                         loadingApps = false,
-                        selected = if (state.dexopt.selected.isEmpty()) {
-                            list.filterNot { it.isSystem }.map { it.packageName }.toSet()
-                        } else {
-                            state.dexopt.selected.intersect(list.map { it.packageName }.toSet())
-                        },
                         error = apps.exceptionOrNull()?.let { "读取应用列表失败：${it.message}" },
                     ),
                 )
@@ -739,11 +738,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setDexoptScope(scope: DexoptScope) {
-        val previous = _state.value.dexopt.scope
-        _state.update { it.copy(dexopt = it.dexopt.copy(scope = scope, selected = emptySet())) }
-        if ((previous == DexoptScope.ALL_USERS_SYSTEM) != (scope == DexoptScope.ALL_USERS_SYSTEM)) {
-            loadDexoptApps()
-        }
+        _state.update { it.copy(dexopt = it.dexopt.copy(scope = scope)) }
     }
 
     fun setDexoptMode(mode: DexoptMode) {
@@ -754,24 +749,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(dexopt = it.dexopt.copy(threads = threads)) }
     }
 
-    fun toggleDexoptApp(packageName: String) {
-        _state.update { state ->
-            val selected = state.dexopt.selected.toMutableSet()
-            if (!selected.add(packageName)) selected.remove(packageName)
-            state.copy(dexopt = state.dexopt.copy(selected = selected))
-        }
-    }
-
-    fun selectAllDexoptApps() {
-        _state.update { state ->
-            state.copy(dexopt = state.dexopt.copy(selected = state.dexopt.apps.map { it.packageName }.toSet()))
-        }
-    }
-
-    fun clearDexoptSelection() {
-        _state.update { it.copy(dexopt = it.dexopt.copy(selected = emptySet())) }
-    }
-
     fun startDexopt() {
         val ui = _state.value.dexopt
         if (ui.runtime.running) return
@@ -779,12 +756,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(message = "dex2oat 需要 Root 权限") }
             return
         }
-        val packages = ui.selected.toList()
+        val packages = ui.scopedApps.map { it.packageName }
         if (packages.isEmpty()) {
-            _state.update { it.copy(message = "请先选择要编译的应用") }
+            _state.update { it.copy(message = "没有可编译的应用") }
             return
         }
-        val labels = ui.apps.associate { it.packageName to it.label }
+        val labels = ui.scopedApps.associate { it.packageName to it.label }
         val job = DexoptJob(
             id = System.currentTimeMillis().toString(),
             packages = packages,
@@ -826,7 +803,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     // ---------------------------------------------------------------- 模块下载
 
-    /** 先用本地/内置索引把页面填出来，索引过期时再联网刷新，然后查最新版本。 */
+    /** 先用本地/内置索引把页面填出来；索引过期时联网刷新，完成后才解锁分类；版本查询后台继续。 */
     fun loadCatalog(force: Boolean = false) {
         if (_state.value.catalog.loadingIndex || _state.value.catalog.loadingReleases) return
         viewModelScope.launch {
@@ -841,7 +818,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             if (force || ModuleCatalogStore.isIndexStale(local)) {
-                _state.update { it.copy(catalog = it.catalog.copy(loadingIndex = true, error = null)) }
+                _state.update {
+                    it.copy(catalog = it.catalog.copy(loadingIndex = true, indexReady = false, error = null))
+                }
                 val refreshed = withContext(Dispatchers.IO) {
                     runCatching { ModuleCatalogStore.refreshIndex(getApplication()) }
                 }
@@ -853,10 +832,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             indexSource = result?.source ?: state.catalog.indexSource,
                             indexAt = result?.fetchedAt ?: state.catalog.indexAt,
                             loadingIndex = false,
+                            indexReady = true,
                             error = if (result == null) "索引更新失败，已使用本地副本" else null,
                         ),
                     )
                 }
+            } else {
+                _state.update { it.copy(catalog = it.catalog.copy(indexReady = true)) }
             }
             fetchCatalogReleases(force)
             refreshCatalogFiles()

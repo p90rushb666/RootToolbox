@@ -33,6 +33,7 @@ import dev.mochi.rootbox.ui.AttestationScreen
 import dev.mochi.rootbox.ui.KeysScreen
 import dev.mochi.rootbox.ui.ModuleScreen
 import dev.mochi.rootbox.ui.ModuleCatalogScreen
+import dev.mochi.rootbox.ui.ModuleCategoryScreen
 import dev.mochi.rootbox.ui.ModuleDownloadsScreen
 import dev.mochi.rootbox.ui.ModuleUpdateScreen
 import dev.mochi.rootbox.ui.SettingsScreen
@@ -69,6 +70,7 @@ private const val RouteBackup = "backup"
 private const val RouteAttestation = "attestation"
 private const val RouteModuleUpdates = "module-updates"
 private const val RouteModuleCatalog = "module-catalog"
+private const val RouteModuleCategory = "module-category"
 private const val RouteModuleDownloads = "module-downloads"
 private const val RouteDexopt = "dexopt"
 private const val RouteKeys = "keys"
@@ -235,6 +237,7 @@ private fun HomeTab(
                 state = state,
                 viewModel = viewModel,
                 navigationIcon = back,
+                onOpenCategory = { category -> nav.push("$RouteModuleCategory:${category.id}", from = RouteModuleCatalog) },
                 onOpenDownloads = { nav.push(RouteModuleDownloads) },
                 showToast = showToast,
             )
@@ -243,6 +246,21 @@ private fun HomeTab(
             RouteTarget -> TargetScreen(state, viewModel, back, showToast)
             RouteDiagnostics -> DiagnosticsScreen(state, viewModel, back, showToast)
             RouteAbout -> AboutScreen(back)
+            else -> {
+                if (route.startsWith("$RouteModuleCategory:")) {
+                    val id = route.substringAfter(":")
+                    val category = state.catalog.index.categories.firstOrNull { it.id == id }
+                    if (category != null) {
+                        ModuleCategoryScreen(
+                            category = category,
+                            state = state,
+                            viewModel = viewModel,
+                            navigationIcon = back,
+                            showToast = showToast,
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -314,5 +332,5 @@ private fun titleFor(route: String): String = when (route) {
     RouteDexopt -> "dex2oat 编译"
     RouteKeys -> "密钥库"
     RoutePreview -> "安装预览"
-    else -> route
+    else -> if (route.startsWith("$RouteModuleCategory:")) "模块下载" else route
 }
