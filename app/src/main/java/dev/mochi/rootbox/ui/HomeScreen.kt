@@ -43,6 +43,7 @@ import ui.feice.mochi.list.MochiListCard
 import ui.feice.mochi.list.MochiListDefaults
 import ui.feice.mochi.list.MochiListRow
 import ui.feice.mochi.list.MochiListStatusChip
+import ui.feice.mochi.navigation.LocalMochiBottomBarInset
 import ui.feice.mochi.navigation.MochiLazyLargeTitleScaffold
 import ui.feice.mochi.navigation.mochiNavSource
 import ui.feice.mochi.theme.MochiDefaults
@@ -286,6 +287,11 @@ fun HomeScreen(
                     onClick = onOpenDiagnostics,
                 )
             }
+        }
+
+        // 底部留出底栏高度 + 额外间距，避免最后一行卡片与底部标签栏重叠。
+        item(key = "bottom-space") {
+            Spacer(Modifier.height(LocalMochiBottomBarInset.current + 28.dp))
         }
     }
     }
