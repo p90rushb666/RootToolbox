@@ -57,6 +57,9 @@ private const val SourceAttestation = "home/attestation"
 private const val SourceModuleUpdates = "home/module-updates"
 private const val SourceModuleCatalog = "home/module-catalog"
 private const val SourceDexopt = "home/dexopt"
+// 编译进度卡与 grid 里的 dex2oat 卡片都跳 dex2oat 页，但 source key 必须分开，
+// 否则两个 mochiNavSource 会在导航注册表里互相覆盖，导致打开式转场从错误的卡片展开。
+private const val SourceDexoptStatus = "home/dexopt-status"
 
 @Composable
 fun HomeScreen(
@@ -69,6 +72,7 @@ fun HomeScreen(
     onOpenModuleUpdates: () -> Unit,
     onOpenModuleCatalog: () -> Unit,
     onOpenDexopt: () -> Unit,
+    onOpenDexoptStatus: () -> Unit,
     onOpenAbout: () -> Unit,
 ) {
     val root = state.root
@@ -168,7 +172,7 @@ fun HomeScreen(
         val savedJob = dexoptUi.savedJob
         if (dexoptUi.runtime.running || savedJob != null) {
             item(key = "compile-status") {
-                MochiListCard(modifier = Modifier.mochiNavSource(SourceDexopt, cardCorner, cardColor)) {
+                MochiListCard(modifier = Modifier.mochiNavSource(SourceDexoptStatus, cardCorner, cardColor)) {
                     MochiListRow(
                         title = "dex2oat 编译",
                         subtitle = when {
@@ -200,7 +204,7 @@ fun HomeScreen(
                                 )
                             }
                         },
-                        onClick = onOpenDexopt,
+                        onClick = onOpenDexoptStatus,
                     )
                 }
             }

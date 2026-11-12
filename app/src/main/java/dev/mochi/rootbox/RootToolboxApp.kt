@@ -84,6 +84,7 @@ private const val SourceAttestation = "home/attestation"
 private const val SourceModuleUpdates = "home/module-updates"
 private const val SourceModuleCatalog = "home/module-catalog"
 private const val SourceDexopt = "home/dexopt"
+private const val SourceDexoptStatus = "home/dexopt-status"
 
 @Composable
 fun RootToolboxApp(viewModel: AppViewModel) {
@@ -218,6 +219,7 @@ private fun HomeTab(
                 onOpenModuleUpdates = { nav.push(RouteModuleUpdates, from = SourceModuleUpdates) },
                 onOpenModuleCatalog = { nav.push(RouteModuleCatalog, from = SourceModuleCatalog) },
                 onOpenDexopt = { nav.push(RouteDexopt, from = SourceDexopt) },
+                onOpenDexoptStatus = { nav.push(RouteDexopt, from = SourceDexoptStatus) },
                 onOpenAbout = { nav.push(RouteAbout) },
             )
 
