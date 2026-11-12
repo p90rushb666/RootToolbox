@@ -8,7 +8,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.Build
-import android.os.Bundle
 import android.os.IBinder
 import dev.mochi.rootbox.MainActivity
 import dev.mochi.rootbox.R
@@ -17,7 +16,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import org.json.JSONObject
 
 /**
  * dex2oat 的前台服务：编译期间持有前台通知，降低被系统回收的概率。
@@ -124,63 +122,9 @@ class DexoptService : Service() {
             builder.setProgress(0, 0, runtime.running)
         }
 
-        // 厂商「岛」适配：小米超级岛 / 焦点通知（miui.focus.param）与 ColorOS 流体云（com.oplus.*），
-        // 字段参考小米官方开发指南与 HyperIslandApi；系统不支持时静默忽略，不影响编译。
-        runCatching {
-            val progressPct = if (runtime.total > 0) {
-                ((runtime.done + runtime.failed) * 100 / runtime.total).coerceIn(0, 100)
-            } else 0
-            val extras = Bundle().apply {
-                putString(
-                    "miui.focus.param",
-                    JSONObject().put(
-                        "param_v2",
-                        JSONObject().apply {
-                            put("updatable", true)
-                            put("enableFloat", true)
-                            put("aodTitle", if (runtime.running) "dex2oat 编译 $progressPct%" else "dex2oat 编译完成")
-                            put("aodPic", "miui.focus.pic_ticker")
-                            put("highlightInfo", JSONObject().apply {
-                                put("subContent", if (runtime.running) "$progressPct%" else "已完成")
-                            })
-                            put("animTextInfo", JSONObject().apply {
-                                put("content", text)
-                            })
-                            if (runtime.running) {
-                                put("actions", org.json.JSONArray().apply {
-                                    put(JSONObject().apply {
-                                        put("type", 1)
-                                        put("progressInfo", JSONObject().apply {
-                                            put("progress", progressPct)
-                                            put("autoProgress", true)
-                                        })
-                                        put("action", "miui.focus.action_1")
-                                    })
-                                })
-                            }
-                            put("param_island", JSONObject().apply {
-                                put("islandProperty", 1)
-                                put("expandedTime", 60)
-                                put("bigIslandArea", JSONObject().apply {
-                                    put("imageTextInfoLeft", JSONObject().apply {
-                                        put("type", 1)
-                                        put("picInfo", JSONObject().apply {
-                                            put("type", 2)
-                                            put("pic", "miui.focus.pic_ticker")
-                                        })
-                                    })
-                                })
-                            })
-                        },
-                    ).toString(),
-                )
-                putBoolean("com.oplus.notification.fluid.enable", runtime.running)
-                putInt("com.oplus.notification.fluid.progress", progressPct)
-                putString("com.oplus.notification.fluid.title", title)
-                putString("com.oplus.notification.fluid.content", text)
-            }
-            builder.addExtras(extras)
-        }
+        // 注意：这里刻意不写厂商「岛」extras（miui.focus.param / com.oplus.*）。
+        // 之前按社区字段写入后，小米 SystemUI 解析通知 extras 时引用到未注册的
+        // 图片/动作资源，导致系统界面反复崩溃。纯标准通知即可安全显示进度。
         return builder.build()
     }
 }
