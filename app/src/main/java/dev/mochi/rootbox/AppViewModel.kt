@@ -2,6 +2,7 @@ package dev.mochi.rootbox
 
 import android.app.Application
 import android.net.Uri
+import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.mochi.rootbox.core.BackupEntry
@@ -684,35 +685,47 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private var revocationJob: kotlinx.coroutines.Job? = null
+
     /**
      * 手动获取最新吊销列表（设置页 / 检测页的「获取最新」）。
-     * 需要访问 Google 服务器，国内网络可能需要 VPN；失败时保留原缓存。
+     * 需要访问 Google 服务器，国内网络可能需要 VPN；失败时保留原缓存；可取消。
      */
     fun refreshRevocationList() {
         if (_state.value.revocationUpdating) return
-        viewModelScope.launch {
+        revocationJob = viewModelScope.launch {
             _state.update { it.copy(revocationUpdating = true) }
-            val result = withContext(Dispatchers.IO) {
-                runCatching { RevocationStore.fetch(getApplication()) }
-            }
-            val snapshot = result.getOrNull()
-            _state.update {
-                it.copy(
-                    revocationUpdating = false,
-                    revocationAt = snapshot?.fetchedAt ?: it.revocationAt,
-                    revocationCount = snapshot?.count ?: it.revocationCount,
-                    message = if (snapshot != null) {
-                        "吊销列表已更新：${snapshot.count} 条"
-                    } else {
-                        "获取失败：${result.exceptionOrNull()?.message ?: "网络不可用"}（已保留原缓存）"
-                    },
-                )
-            }
-            if (snapshot != null && _state.value.attestation != null) {
-                // 列表变了，重新算一次结论。
-                runAttestation()
+            try {
+                val snapshot = withContext(Dispatchers.IO) { RevocationStore.fetch(getApplication()) }
+                _state.update {
+                    it.copy(
+                        revocationAt = snapshot.fetchedAt,
+                        revocationCount = snapshot.count,
+                        message = "吊销列表已更新：${snapshot.count} 条",
+                    )
+                }
+                if (_state.value.attestation != null) {
+                    // 列表变了，重新算一次结论。
+                    runAttestation()
+                }
+            } catch (t: kotlinx.coroutines.CancellationException) {
+                // 用户主动取消：不报错、不改状态。
+                throw t
+            } catch (t: Throwable) {
+                _state.update {
+                    it.copy(message = "获取失败：${t.message ?: "网络不可用"}（已保留原缓存）")
+                }
+            } finally {
+                _state.update { it.copy(revocationUpdating = false) }
             }
         }
+    }
+
+    /** 取消进行中的吊销列表获取。 */
+    fun cancelRevocationRefresh() {
+        revocationJob?.cancel()
+        revocationJob = null
+        _state.update { it.copy(revocationUpdating = false) }
     }
 
     // ---------------------------------------------------------------- dex2oat 编译
@@ -778,6 +791,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun pauseDexopt() {
         DexoptRunner.cancel(getApplication())
         _state.update { it.copy(dexopt = it.dexopt.copy(savedJob = DexoptStore.load(getApplication()))) }
+    }
+
+    /**
+     * 无障碍保活自动开启：第一次由用户手动开启，之后若被系统关闭且已有 Root，
+     * 直接用 Root 写入 Settings.Secure 重新开启，无需再手动进设置页。
+     */
+    fun autoEnableAccessibility() {
+        if (_state.value.root?.granted != true) return
+        viewModelScope.launch {
+            val app = getApplication<Application>()
+            val component = "${app.packageName}/dev.mochi.rootbox.core.KeepAliveService"
+            val current = withContext(Dispatchers.IO) {
+                Settings.Secure.getString(
+                    app.contentResolver,
+                    Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+                ).orEmpty()
+            }
+            if (current.split(':').any { it.trim() == component }) return@launch
+            val merged = if (current.isBlank()) component else "$current:$component"
+            val result = Shell.su(
+                "settings put secure enabled_accessibility_services '$merged' && " +
+                    "settings put secure accessibility_enabled 1",
+            )
+            if (result.ok) {
+                DiagLog.info("accessibility", "已用 Root 自动开启无障碍保活")
+            } else {
+                DiagLog.warn("accessibility", "自动开启无障碍失败：${result.brief()}")
+            }
+        }
     }
 
     /** 继续上次中断的任务（只跑还没完成的包）。 */

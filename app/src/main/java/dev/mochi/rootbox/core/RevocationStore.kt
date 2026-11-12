@@ -2,6 +2,8 @@ package dev.mochi.rootbox.core
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.job
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
@@ -68,40 +70,53 @@ object RevocationStore {
         if (map.isEmpty()) null else Snapshot(fetchedAt, map)
     }.getOrNull()
 
-    /** 联网拉取并写入缓存；失败抛异常，原缓存不动。 */
+    /** 联网拉取并写入缓存；失败抛异常，原缓存不动。支持协程取消（取消时断开连接）。 */
     suspend fun fetch(context: Context): Snapshot = withContext(Dispatchers.IO) {
-        val connection = (URL(STATUS_URL).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = CONNECT_TIMEOUT_MS
-            readTimeout = READ_TIMEOUT_MS
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "RootToolbox")
-        }
-        val text = try {
-            val code = connection.responseCode
-            if (code !in 200..299) throw IllegalStateException("HTTP $code")
-            connection.inputStream.bufferedReader().use { it.readText() }
-        } finally {
-            connection.disconnect()
-        }
+        var connection: HttpURLConnection? = null
+        // 协程被取消（用户点「取消」）时断开连接，让阻塞中的 read 立即返回，而不是等超时。
+        val completion = currentCoroutineContext()[kotlinx.coroutines.Job]
+            ?.invokeOnCompletion { cause ->
+                if (cause != null) runCatching { connection?.disconnect() }
+            }
+        try {
+            connection = (URL(STATUS_URL).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = CONNECT_TIMEOUT_MS
+                readTimeout = READ_TIMEOUT_MS
+                setRequestProperty("Accept", "application/json")
+                setRequestProperty("User-Agent", "RootToolbox")
+            }
+            if (currentCoroutineContext()[kotlinx.coroutines.Job]?.isActive == false) {
+                throw kotlinx.coroutines.CancellationException("吊销列表获取已取消")
+            }
+            val text = try {
+                val code = connection.responseCode
+                if (code !in 200..299) throw IllegalStateException("HTTP $code")
+                connection.inputStream.bufferedReader().use { it.readText() }
+            } finally {
+                connection.disconnect()
+            }
 
-        val root = JSONObject(text)
-        val entries = root.optJSONObject("entries") ?: throw IllegalStateException("返回内容缺少 entries")
-        val map = buildMap {
-            entries.keys().forEach { serial ->
-                val item = entries.optJSONObject(serial)
-                val status = item?.optString("status").orEmpty()
-                if (status.isNotEmpty()) {
-                    put(serial.lowercase(Locale.US), item?.optString("reason").orEmpty())
+            val root = JSONObject(text)
+            val entries = root.optJSONObject("entries") ?: throw IllegalStateException("返回内容缺少 entries")
+            val map = buildMap {
+                entries.keys().forEach { serial ->
+                    val item = entries.optJSONObject(serial)
+                    val status = item?.optString("status").orEmpty()
+                    if (status.isNotEmpty()) {
+                        put(serial.lowercase(Locale.US), item?.optString("reason").orEmpty())
+                    }
                 }
             }
-        }
-        if (map.isEmpty()) throw IllegalStateException("吊销列表为空")
+            if (map.isEmpty()) throw IllegalStateException("吊销列表为空")
 
-        val snapshot = Snapshot(System.currentTimeMillis(), map)
-        save(context, snapshot)
-        DiagLog.info("attest", "吊销列表已更新：${snapshot.count} 条")
-        snapshot
+            val snapshot = Snapshot(System.currentTimeMillis(), map)
+            save(context, snapshot)
+            DiagLog.info("attest", "吊销列表已更新：${snapshot.count} 条")
+            snapshot
+        } finally {
+            completion?.dispose()
+        }
     }
 
     @Synchronized

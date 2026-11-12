@@ -293,15 +293,32 @@ fun AttestationScreen(
                             destructive = revoked,
                             trailing = {
                                 MochiIconButton(
-                                    onClick = { showRevocationDialog = true },
+                                    onClick = {
+                                        if (state.revocationUpdating) {
+                                            viewModel.cancelRevocationRefresh()
+                                        } else {
+                                            showRevocationDialog = true
+                                        }
+                                    },
                                     style = MochiButtonStyle.Tonal,
                                     size = 36.dp,
-                                    enabled = !state.revocationUpdating,
                                 ) {
-                                    MochiIonicon("refresh", contentDescription = "获取最新吊销列表")
+                                    MochiIonicon(
+                                        if (state.revocationUpdating) "close" else "refresh",
+                                        contentDescription = if (state.revocationUpdating) "取消获取" else "获取最新吊销列表",
+                                    )
                                 }
                             },
                         )
+                    }
+                    if (state.revocationUpdating) {
+                        row(key = "revocation-updating") {
+                            MochiListRow(
+                                title = "正在获取最新吊销列表…",
+                                subtitle = "点右侧 × 可中断",
+                                loading = true,
+                            )
+                        }
                     }
                 }
             }

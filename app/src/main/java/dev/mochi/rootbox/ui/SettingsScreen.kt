@@ -228,10 +228,19 @@ fun SettingsScreen(
                         .padding(horizontal = 18.dp, vertical = 14.dp),
                 ) {
                     MochiButton(
-                        onClick = { showRevocationDialog = true },
+                        onClick = {
+                            if (state.revocationUpdating) {
+                                viewModel.cancelRevocationRefresh()
+                            } else {
+                                showRevocationDialog = true
+                            }
+                        },
                         style = MochiButtonStyle.Filled,
-                        enabled = !state.revocationUpdating,
-                    ) { Text(if (state.revocationUpdating) "获取中…" else "获取最新吊销列表") }
+                    ) {
+                        Text(
+                            if (state.revocationUpdating) "获取中…（点击取消）" else "获取最新吊销列表",
+                        )
+                    }
                 }
             }
         }

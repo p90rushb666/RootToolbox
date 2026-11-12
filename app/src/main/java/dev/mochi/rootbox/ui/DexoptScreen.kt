@@ -55,6 +55,7 @@ import ui.feice.mochi.basic.MochiDialogAction
 import ui.feice.mochi.basic.MochiDialogActionRole
 import ui.feice.mochi.basic.MochiProgressBar
 import ui.feice.mochi.basic.MochiProgressRing
+import ui.feice.mochi.basic.MochiStepSlider
 import ui.feice.mochi.basic.Text
 import ui.feice.mochi.icons.MochiIonicon
 import ui.feice.mochi.list.MochiListRow
@@ -75,6 +76,10 @@ fun DexoptScreen(
     showToast: (String) -> Unit,
 ) {
     LaunchedEffect(Unit) { viewModel.loadDexoptApps() }
+    // Root 就绪后，若无障碍保活被系统关闭，自动用 Root 重新开启（第一次仍由用户手动开启）。
+    LaunchedEffect(state.root?.granted) {
+        if (state.root?.granted == true) viewModel.autoEnableAccessibility()
+    }
 
     val ui = state.dexopt
     val runtime = ui.runtime
@@ -202,27 +207,33 @@ fun DexoptScreen(
         }
 
         mochiListSection(key = "mode", header = "编译模式") {
-            row(key = "mode-chips") {
-                MochiChipGroup(
-                    modifier = Modifier.fillMaxWidth(),
-                    wrap = true,
-                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
+            row(key = "mode-slider") {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp, vertical = 14.dp),
                 ) {
-                    DexoptMode.entries.forEach { mode ->
-                        MochiChip(
-                            label = mode.label,
-                            selected = ui.mode == mode,
-                            onClick = { viewModel.setDexoptMode(mode) },
-                            leadingIcon = { MochiIonicon(mode.iconName) },
-                        )
+                    MochiStepSlider(
+                        value = DexoptMode.entries.indexOf(ui.mode),
+                        onValueChange = { index ->
+                            DexoptMode.entries.getOrNull(index)?.let(viewModel::setDexoptMode)
+                        },
+                        count = DexoptMode.entries.size,
+                        enabled = !runtime.running,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        MochiIonicon(ui.mode.iconName)
+                        Spacer(Modifier.width(6.dp))
+                        Text(ui.mode.label, style = MochiTheme.textStyles.bodyLarge)
                     }
+                    Text(
+                        ui.mode.description,
+                        style = MochiTheme.textStyles.footnote,
+                        color = scheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
                 }
-            }
-            row(key = "mode-desc") {
-                MochiListRow(
-                    title = ui.mode.label,
-                    subtitle = ui.mode.description,
-                )
             }
         }
 
@@ -231,19 +242,25 @@ fun DexoptScreen(
             header = "编译线程",
             footer = "线程数通过临时 setprop dalvik.vm.dex2oat-threads 生效，编译结束后自动还原；部分 ROM 会忽略该属性。",
         ) {
-            row(key = "thread-chips") {
-                MochiChipGroup(
-                    modifier = Modifier.fillMaxWidth(),
-                    wrap = true,
-                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
+            row(key = "thread-slider") {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp, vertical = 14.dp),
                 ) {
-                    DexoptThreads.entries.forEach { threads ->
-                        MochiChip(
-                            label = threads.label,
-                            selected = ui.threads == threads,
-                            onClick = { viewModel.setDexoptThreads(threads) },
-                            leadingIcon = { MochiIonicon(threads.iconName) },
-                        )
+                    MochiStepSlider(
+                        value = DexoptThreads.entries.indexOf(ui.threads),
+                        onValueChange = { index ->
+                            DexoptThreads.entries.getOrNull(index)?.let(viewModel::setDexoptThreads)
+                        },
+                        count = DexoptThreads.entries.size,
+                        enabled = !runtime.running,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        MochiIonicon(ui.threads.iconName)
+                        Spacer(Modifier.width(6.dp))
+                        Text(ui.threads.label, style = MochiTheme.textStyles.bodyLarge)
                     }
                 }
             }

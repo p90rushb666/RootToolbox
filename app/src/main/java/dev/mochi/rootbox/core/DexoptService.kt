@@ -82,7 +82,7 @@ class DexoptService : Service() {
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "dex2oat 编译",
-                NotificationManager.IMPORTANCE_LOW,
+                NotificationManager.IMPORTANCE_DEFAULT,
             ).apply {
                 description = "显示 dex2oat 编译进度"
                 setShowBadge(false)
@@ -124,22 +124,58 @@ class DexoptService : Service() {
             builder.setProgress(0, 0, runtime.running)
         }
 
-        // 厂商「岛」适配：字段按社区常见做法写入，系统不支持会忽略。
+        // 厂商「岛」适配：小米超级岛 / 焦点通知（miui.focus.param）与 ColorOS 流体云（com.oplus.*），
+        // 字段参考小米官方开发指南与 HyperIslandApi；系统不支持时静默忽略，不影响编译。
         runCatching {
+            val progressPct = if (runtime.total > 0) {
+                ((runtime.done + runtime.failed) * 100 / runtime.total).coerceIn(0, 100)
+            } else 0
             val extras = Bundle().apply {
                 putString(
                     "miui.focus.param",
                     JSONObject().put(
                         "param_v2",
-                        JSONObject()
-                            .put("is_support", true)
-                            .put("progress", if (runtime.total > 0) runtime.done * 100 / runtime.total else 0)
-                            .put("title", title)
-                            .put("content", text),
+                        JSONObject().apply {
+                            put("updatable", true)
+                            put("enableFloat", true)
+                            put("aodTitle", if (runtime.running) "dex2oat 编译 $progressPct%" else "dex2oat 编译完成")
+                            put("aodPic", "miui.focus.pic_ticker")
+                            put("highlightInfo", JSONObject().apply {
+                                put("subContent", if (runtime.running) "$progressPct%" else "已完成")
+                            })
+                            put("animTextInfo", JSONObject().apply {
+                                put("content", text)
+                            })
+                            if (runtime.running) {
+                                put("actions", org.json.JSONArray().apply {
+                                    put(JSONObject().apply {
+                                        put("type", 1)
+                                        put("progressInfo", JSONObject().apply {
+                                            put("progress", progressPct)
+                                            put("autoProgress", true)
+                                        })
+                                        put("action", "miui.focus.action_1")
+                                    })
+                                })
+                            }
+                            put("param_island", JSONObject().apply {
+                                put("islandProperty", 1)
+                                put("expandedTime", 60)
+                                put("bigIslandArea", JSONObject().apply {
+                                    put("imageTextInfoLeft", JSONObject().apply {
+                                        put("type", 1)
+                                        put("picInfo", JSONObject().apply {
+                                            put("type", 2)
+                                            put("pic", "miui.focus.pic_ticker")
+                                        })
+                                    })
+                                })
+                            })
+                        },
                     ).toString(),
                 )
                 putBoolean("com.oplus.notification.fluid.enable", runtime.running)
-                putInt("com.oplus.notification.fluid.progress", if (runtime.total > 0) runtime.done * 100 / runtime.total else 0)
+                putInt("com.oplus.notification.fluid.progress", progressPct)
                 putString("com.oplus.notification.fluid.title", title)
                 putString("com.oplus.notification.fluid.content", text)
             }

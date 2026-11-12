@@ -84,7 +84,7 @@ modules/index.json  # 模块下载页的远程索引（同时打包进 APK 作�
    - **缓存优先**：有缓存就立即判定，检测不会因为联网而变慢；
    - **24 小时过期**：Google 响应头就是 `max-age=86400`，过期后检测页会提示「建议获取最新吊销列表」；
    - **首次运行**（没有缓存）时才在检测过程中联网拉一次；失败则吊销状态显示「未校验」，不假装通过；
-   - 设置与检测页都提供「获取最新吊销列表」，会先提示国内网络可能需要 VPN，失败时保留原缓存。
+   - 设置与检测页都提供「获取最新吊销列表」，会先提示国内网络可能需要 VPN，失败时保留原缓存；获取过程中可点 × 取消。
 
 页面结构对齐参考实现：顶部是根证书等级（例如「谷歌远程密钥配置」），紧接着是引导加载程序状态（已锁定 / 已解锁 / 信任根由最终用户设置 / 状态未知），再往下才是证书链、可信执行环境、构建指纹、信任根、认证质询。首页卡片的徽标另外给出 **有效 / 无效 / 未校验**：只有「Google 硬件根或 Google 远程密钥根 + 证书链有效 + 质询匹配 + 未被吊销 + 密钥在 TEE / StrongBox 中生成」才算有效；吊销状态还没拿到时显示「未校验」，不会当成有效。
 
@@ -119,9 +119,9 @@ modules/index.json  # 模块下载页的远程索引（同时打包进 APK 作�
 
 ## dex2oat 编译
 
-通过 `cmd package compile -m quicken|speed-profile|speed -f <pkg>` 逐个应用编译（**不带 `--user`**：AOSP 的 `cmd package compile` 不支持该参数，传了会报 `unknown option` 导致每个应用都失败，已去掉）。线程数通过临时 `setprop dalvik.vm.dex2oat-threads <n>` 生效，结束后还原为原值（部分 ROM 会忽略该属性）。任务队列、已完成与失败的包写入 `files/dexopt/job.json`，中断后页面会提示「上次任务未完成」并可从剩余应用继续，完成后展开每个失败应用的具体原因。
+通过 `cmd package compile -m quicken|speed-profile|speed -f <pkg>` 逐个应用编译（**不带 `--user`**：AOSP 的 `cmd package compile` 不支持该参数，传了会报 `unknown option` 导致每个应用都失败，已去掉）。编译模式（快速 / 热点 / 全量）与线程（系统档位 / 2 / 4 / 8 / 全开）用组件库的分档滑条选择，开始按钮置顶并附当前设置摘要。线程数通过临时 `setprop dalvik.vm.dex2oat-threads <n>` 生效，结束后还原为原值（部分 ROM 会忽略该属性）。任务队列、已完成与失败的包写入 `files/dexopt/job.json`，中断后页面会提示「上次任务未完成」并可从剩余应用继续，完成后展开每个失败应用的具体原因。
 
-编译期间启动前台服务持有进度通知；通知同时写入小米 `miui.focus.*` 与 OPPO `com.oplus.notification.fluid.*` extras 尝试上岛/上云，系统不支持时会静默忽略。设置页可跳转通知权限、电池优化白名单与无障碍服务，用来降低被系统杀掉的概率。
+编译期间启动前台服务持有进度通知（开始编译即弹出）；通知同时写入小米超级岛 / 焦点通知的 `miui.focus.param`（结构参考小米官方开发指南与 HyperIslandApi，含 `aodTitle` / `param_island` / 进度）与 OPPO 流体云的 `com.oplus.notification.fluid.*` extras 尝试上岛/上云，系统不支持时会静默忽略。无障碍保活第一次由用户手动开启，之后若被系统关闭且已有 Root，会用 Root 自动写回 `Settings.Secure` 重新开启；设置页也可手动跳转通知权限、电池优化白名单与无障碍服务。
 
 ## 已知限制与风险
 
