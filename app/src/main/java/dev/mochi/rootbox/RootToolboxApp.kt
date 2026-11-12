@@ -273,7 +273,7 @@ private fun SettingsTab(
     MochiNavHost(nav, Modifier.fillMaxSize(), predictiveBack = predictiveBack) { route ->
         val back: @Composable () -> Unit = { MochiBackButton(history = ::titleFor) }
         when (route) {
-            RouteSettings -> SettingsScreen(settings, viewModel, null, { nav.push(RouteTarget) })
+            RouteSettings -> SettingsScreen(settings, state, viewModel, null, { nav.push(RouteTarget) })
             RouteTarget -> TargetScreen(state, viewModel, back, showToast)
         }
     }

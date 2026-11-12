@@ -28,6 +28,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import dev.mochi.rootbox.AppState
 import dev.mochi.rootbox.AppViewModel
+import dev.mochi.rootbox.core.AttestationVerdict
 import ui.feice.mochi.basic.MochiBarGroup
 import ui.feice.mochi.basic.MochiBarGroupItem
 import ui.feice.mochi.basic.MochiButton
@@ -187,16 +188,19 @@ fun HomeScreen(
                         state.attestationRunning -> "检测中"
                         attestation == null -> "未检测"
                         attestation.valid -> "有效"
+                        attestation.verdict == AttestationVerdict.UNVERIFIED -> "未校验"
                         else -> "无效"
                     },
                     badgeContainer = when {
                         state.attestationRunning || attestation == null -> scheme.surfaceVariant
                         attestation.valid -> scheme.primaryContainer
+                        attestation.verdict == AttestationVerdict.UNVERIFIED -> scheme.surfaceVariant
                         else -> scheme.errorContainer
                     },
                     badgeContent = when {
                         state.attestationRunning || attestation == null -> scheme.onSurfaceVariant
                         attestation.valid -> scheme.onPrimaryContainer
+                        attestation.verdict == AttestationVerdict.UNVERIFIED -> scheme.onSurfaceVariant
                         else -> scheme.onErrorContainer
                     },
                     action = {

@@ -16,6 +16,7 @@ import dev.mochi.rootbox.core.ModuleLoadChecker
 import dev.mochi.rootbox.core.ModuleLoadStatus
 import dev.mochi.rootbox.core.ModuleUpdateChecker
 import dev.mochi.rootbox.core.ModuleUpdateItem
+import dev.mochi.rootbox.core.RevocationStore
 import dev.mochi.rootbox.core.DownloadedModule
 import dev.mochi.rootbox.core.ModuleDownloadStore
 import dev.mochi.rootbox.core.AttestationChecker
@@ -98,6 +99,10 @@ data class AppState(
     val moduleLoadChecking: Boolean = false,
     val attestation: AttestationResult? = null,
     val attestationRunning: Boolean = false,
+    /** 吊销列表缓存：最近一次成功拉取的时间与条目数（0 表示从未拉取）。 */
+    val revocationAt: Long = 0L,
+    val revocationCount: Int = 0,
+    val revocationUpdating: Boolean = false,
     val moduleUpdates: ModuleUpdateUi = ModuleUpdateUi(),
 ) {
     val allItems: List<KeyboxItem> get() = sources.flatMap { it.items }
@@ -125,6 +130,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // 配置变化/重组会再次调用 start；用一次性标记保证只有真正的冷启动才自动检测。
         if (started) return
         started = true
+        refreshRevocationInfo()
         if (_settings.value.autoCheckRoot) {
             refreshRoot()
             runAttestation()
@@ -594,6 +600,54 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val timeoutMs = _settings.value.attestationTimeoutSec * 1000L
             val result = AttestationChecker.check(getApplication(), timeoutMs)
             _state.update { it.copy(attestation = result, attestationRunning = false) }
+            // 首次检测可能顺带拉到了吊销列表，同步一下缓存元信息。
+            refreshRevocationInfo()
+        }
+    }
+
+    /** 读取本地缓存的元信息（更新时间 / 条数），不联网。 */
+    fun refreshRevocationInfo() {
+        viewModelScope.launch {
+            val snapshot = withContext(Dispatchers.IO) {
+                RevocationStore.load(getApplication())
+            }
+            _state.update {
+                it.copy(
+                    revocationAt = snapshot?.fetchedAt ?: 0L,
+                    revocationCount = snapshot?.count ?: 0,
+                )
+            }
+        }
+    }
+
+    /**
+     * 手动获取最新吊销列表（设置页 / 检测页的「获取最新」）。
+     * 需要访问 Google 服务器，国内网络可能需要 VPN；失败时保留原缓存。
+     */
+    fun refreshRevocationList() {
+        if (_state.value.revocationUpdating) return
+        viewModelScope.launch {
+            _state.update { it.copy(revocationUpdating = true) }
+            val result = withContext(Dispatchers.IO) {
+                runCatching { RevocationStore.fetch(getApplication()) }
+            }
+            val snapshot = result.getOrNull()
+            _state.update {
+                it.copy(
+                    revocationUpdating = false,
+                    revocationAt = snapshot?.fetchedAt ?: it.revocationAt,
+                    revocationCount = snapshot?.count ?: it.revocationCount,
+                    message = if (snapshot != null) {
+                        "吊销列表已更新：${snapshot.count} 条"
+                    } else {
+                        "获取失败：${result.exceptionOrNull()?.message ?: "网络不可用"}（已保留原缓存）"
+                    },
+                )
+            }
+            if (snapshot != null && _state.value.attestation != null) {
+                // 列表变了，重新算一次结论。
+                runAttestation()
+            }
         }
     }
 

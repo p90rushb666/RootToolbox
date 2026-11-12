@@ -20,7 +20,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -37,8 +40,12 @@ import dev.mochi.rootbox.core.BootTone
 import dev.mochi.rootbox.core.RootKind
 import dev.mochi.rootbox.data.AppSettings
 import kotlinx.coroutines.launch
+import kotlinx.collections.immutable.persistentListOf
 import ui.feice.mochi.basic.MochiActivityIndicator
 import ui.feice.mochi.basic.MochiButtonStyle
+import ui.feice.mochi.basic.MochiDialog
+import ui.feice.mochi.basic.MochiDialogAction
+import ui.feice.mochi.basic.MochiDialogActionRole
 import ui.feice.mochi.basic.MochiIconButton
 import ui.feice.mochi.basic.Text
 import ui.feice.mochi.icons.MochiIonicon
@@ -71,6 +78,7 @@ fun AttestationScreen(
     val showDetails = settings.attestationShowDetails
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    var showRevocationDialog by remember { mutableStateOf(false) }
 
     MochiLazyCompactTitleScaffold(
         title = "密钥检测",
@@ -268,19 +276,31 @@ fun AttestationScreen(
                 mochiListSection(
                     key = "revocation",
                     header = "吊销状态",
-                    footer = "联网比对 Google 官方吊销列表（android.googleapis.com/attestation/status）；网络不可用时使用内置快照，并在结论里标明。",
+                    footer = "吊销列表来自 Google 官方接口（android.googleapis.com/attestation/status），缓存在本机；超过 24 小时会提示更新。国内网络访问 Google 可能需要 VPN。",
                 ) {
                     row(key = "revocation-value") {
+                        val revoked = result.revocation?.contains("已吊销") == true
+                        val unknown = result.revocationAt == null
                         MochiListRow(
                             title = "证书吊销校验",
                             subtitle = result.revocation ?: "未校验",
                             value = when {
-                                result.revocation == null -> "未知"
-                                result.revocation.contains("已吊销") -> "已吊销"
-                                result.revocation.startsWith("无法") -> "未知"
+                                revoked -> "已吊销"
+                                unknown -> "未校验"
+                                result.revocationStale -> "已过期"
                                 else -> "通过"
                             },
-                            destructive = result.revocation?.contains("已吊销") == true,
+                            destructive = revoked,
+                            trailing = {
+                                MochiIconButton(
+                                    onClick = { showRevocationDialog = true },
+                                    style = MochiButtonStyle.Tonal,
+                                    size = 36.dp,
+                                    enabled = !state.revocationUpdating,
+                                ) {
+                                    MochiIonicon("refresh", contentDescription = "获取最新吊销列表")
+                                }
+                            },
                         )
                     }
                 }
@@ -319,6 +339,24 @@ fun AttestationScreen(
             Spacer(Modifier.height(LocalMochiBottomBarInset.current + 24.dp))
         }
     }
+
+    MochiDialog(
+        visible = showRevocationDialog,
+        onDismissRequest = { showRevocationDialog = false },
+        title = "获取最新吊销列表",
+        message = "需要访问 Google 服务器（android.googleapis.com/attestation/status）。\n\n" +
+            "国内网络可能需要 VPN 才能成功；获取失败时会保留现有缓存，不会影响已有结论。",
+        actions = persistentListOf(
+            MochiDialogAction("取消", MochiDialogActionRole.Cancel),
+            MochiDialogAction(
+                label = "获取",
+                onClick = {
+                    showRevocationDialog = false
+                    viewModel.refreshRevocationList()
+                },
+            ),
+        ),
+    )
 }
 
 private fun gradeTone(

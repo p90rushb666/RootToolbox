@@ -20,12 +20,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import dev.mochi.rootbox.AppState
 import dev.mochi.rootbox.AppViewModel
 import dev.mochi.rootbox.data.AppSettings
 import dev.mochi.rootbox.data.DarkMode
 import dev.mochi.rootbox.data.SeedColors
 import kotlinx.collections.immutable.persistentListOf
 import ui.feice.mochi.basic.MochiButton
+import ui.feice.mochi.basic.MochiButtonStyle
+import ui.feice.mochi.basic.MochiDialog
+import ui.feice.mochi.basic.MochiDialogAction
+import ui.feice.mochi.basic.MochiDialogActionRole
 import ui.feice.mochi.basic.MochiChip
 import ui.feice.mochi.basic.MochiChipGroup
 import ui.feice.mochi.basic.MochiIconButton
@@ -43,10 +48,13 @@ import ui.feice.mochi.theme.MochiTheme
 @Composable
 fun SettingsScreen(
     settings: AppSettings,
+    state: AppState,
     viewModel: AppViewModel,
     navigationIcon: (@Composable () -> Unit)?,
     onOpenTargets: () -> Unit,
 ) {
+    var showRevocationDialog by remember { mutableStateOf(false) }
+
     MochiLazyCompactTitleScaffold(
         title = "设置",
         subtitle = "外观与行为",
@@ -198,6 +206,37 @@ fun SettingsScreen(
         }
 
         mochiListSection(
+            key = "revocation",
+            header = "吊销列表",
+            footer = "数据来自 Google 官方接口，缓存在本机。超过 24 小时会在密钥检测页提示更新；国内网络访问 Google 可能需要 VPN。",
+        ) {
+            row(key = "revocation-info") {
+                MochiListRow(
+                    title = "上次更新",
+                    subtitle = if (state.revocationCount > 0) {
+                        "共 ${state.revocationCount} 条"
+                    } else {
+                        "还没有获取过，检测时会自动尝试一次"
+                    },
+                    value = revocationAgeText(state.revocationAt),
+                )
+            }
+            row(key = "revocation-update") {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp, vertical = 14.dp),
+                ) {
+                    MochiButton(
+                        onClick = { showRevocationDialog = true },
+                        style = MochiButtonStyle.Filled,
+                        enabled = !state.revocationUpdating,
+                    ) { Text(if (state.revocationUpdating) "获取中…" else "获取最新吊销列表") }
+                }
+            }
+        }
+
+        mochiListSection(
             key = "security",
             header = "安全",
             footer = "开启后，每次真正写入前都要验证一次设备锁屏凭据。",
@@ -263,5 +302,34 @@ fun SettingsScreen(
         item(key = "bottom-space") {
             Spacer(Modifier.height(LocalMochiBottomBarInset.current + 24.dp))
         }
+    }
+
+    MochiDialog(
+        visible = showRevocationDialog,
+        onDismissRequest = { showRevocationDialog = false },
+        title = "获取最新吊销列表",
+        message = "需要访问 Google 服务器（android.googleapis.com/attestation/status）。\n\n" +
+            "国内网络可能需要 VPN 才能成功；获取失败时会保留现有缓存，不会影响已有结论。",
+        actions = persistentListOf(
+            MochiDialogAction("取消", MochiDialogActionRole.Cancel),
+            MochiDialogAction(
+                label = "获取",
+                onClick = {
+                    showRevocationDialog = false
+                    viewModel.refreshRevocationList()
+                },
+            ),
+        ),
+    )
+}
+
+private fun revocationAgeText(at: Long): String {
+    if (at <= 0L) return "从未更新"
+    val diff = (System.currentTimeMillis() - at).coerceAtLeast(0L)
+    return when {
+        diff < 60_000L -> "刚刚"
+        diff < 3_600_000L -> "${diff / 60_000L} 分钟前"
+        diff < 86_400_000L -> "${diff / 3_600_000L} 小时前"
+        else -> "${diff / 86_400_000L} 天前"
     }
 }

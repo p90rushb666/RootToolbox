@@ -9,6 +9,7 @@ import android.util.Base64
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
@@ -40,7 +41,7 @@ enum class RootKind { GOOGLE, GOOGLE_RKP, AOSP, KNOX, OEM, UNKNOWN, FAILED }
 
 enum class BootTone { SAFE, WARN, NEUTRAL }
 
-enum class AttestationVerdict { VALID, INVALID, UNSUPPORTED }
+enum class AttestationVerdict { VALID, UNVERIFIED, INVALID, UNSUPPORTED }
 
 /**
  * 密钥认证结果，结构与参考实现一致：
@@ -65,8 +66,14 @@ data class AttestationResult(
     val verifiedBootState: String? = null,
     val deviceLocked: Boolean? = null,
     val challenge: String? = null,
-    /** 吊销校验结论，例如「在线校验通过」「已吊销：KEY_COMPROMISE」「离线校验（内置快照）」。 */
+    /** 吊销校验结论，例如「校验通过（列表更新于 …）」「已吊销：KEY_COMPROMISE」。 */
     val revocation: String? = null,
+    /** 吊销列表的拉取时间；null 表示还没有缓存。 */
+    val revocationAt: Long? = null,
+    /** 缓存是否超过 24 小时。 */
+    val revocationStale: Boolean = true,
+    /** 缓存里的条目数。 */
+    val revocationCount: Int? = null,
     val securityLevel: Int? = null,
     val verdict: AttestationVerdict = AttestationVerdict.INVALID,
     val error: String? = null,
@@ -77,7 +84,6 @@ data class AttestationResult(
 object AttestationChecker {
 
     private const val OID_KEY_DESCRIPTION = "1.3.6.1.4.1.11129.2.1.17"
-    private const val REVOCATION_ASSET = "attestation_revoked.json"
     private const val STATUS_URL = "https://android.googleapis.com/attestation/status"
 
     // 与参考实现完全一致的根公钥（SubjectPublicKeyInfo 的 Base64）。
@@ -142,14 +148,16 @@ object AttestationChecker {
     @Volatile
     private var oemKeys: List<ByteArray>? = null
 
-    @Volatile
-    private var cachedRevocation: Map<String, String>? = null
-
     /** 冷启动或手动点「重新检测」时调用；超时返回错误结果而不是一直转圈。 */
     suspend fun check(context: Context, timeoutMs: Long): AttestationResult = coroutineScope {
         val started = System.currentTimeMillis()
+        // 吊销列表缓存优先：有缓存（哪怕过期）就直接用，检测不会因为联网而变慢；
+        // 只有从来没拉取过（首次安装 / 清数据）时才在检测里联网拉一次。
+        val snapshot = withContext(Dispatchers.IO) {
+            RevocationStore.load(context) ?: runCatching { RevocationStore.fetch(context) }.getOrNull()
+        }
         // Keystore 是阻塞调用，用独立协程 + 超时，卡住时也能先把结果返回给界面。
-        val work = async(Dispatchers.IO) { runCheck(context) }
+        val work = async(Dispatchers.IO) { runCheck(context, snapshot) }
         val result = withTimeoutOrNull(timeoutMs) { work.await() }
         result ?: errorResult(
             "无法认证",
@@ -160,7 +168,10 @@ object AttestationChecker {
         }
     }
 
-    private fun runCheck(context: Context): AttestationResult {
+    private fun runCheck(
+        context: Context,
+        revocationSnapshot: RevocationStore.Snapshot?,
+    ): AttestationResult {
         val checkedAt = System.currentTimeMillis()
         val challenge = Date(checkedAt).toString()
         val keyStore = runCatching {
@@ -223,7 +234,7 @@ object AttestationChecker {
         val softwareLevel = description?.securityLevel == 0
         val bootSummary = if (softwareLevel) "该设备不支持硬件级别的密钥认证。" else null
 
-        val revocation = if (description == null) null else checkRevocation(context, leaf.serialNumber)
+        val revocation = if (description == null) null else checkRevocation(revocationSnapshot, leaf.serialNumber)
 
         // 参考应用的「可信执行环境」只给出「正常 / 异常」，判定依据是认证数据的标签顺序是否被改写。
         val teeStatus = when {
@@ -268,6 +279,10 @@ object AttestationChecker {
                 verdict = AttestationVerdict.INVALID
                 error = "密钥由软件层提供（SecurityLevel = Software），不属于硬件密钥认证。"
             }
+            revocation?.known == false -> {
+                verdict = AttestationVerdict.UNVERIFIED
+                error = "无法校验吊销状态：还没获取过 Google 吊销列表，请联网后重新检测。"
+            }
             else -> {
                 verdict = AttestationVerdict.VALID
                 error = null
@@ -296,6 +311,9 @@ object AttestationChecker {
             deviceLocked = description?.deviceLocked,
             challenge = description?.challenge?.toString(Charsets.UTF_8) ?: challenge,
             revocation = revocation?.text,
+            revocationAt = revocation?.fetchedAt,
+            revocationStale = revocation?.stale ?: true,
+            revocationCount = revocation?.count,
             securityLevel = description?.securityLevel,
             verdict = verdict,
             error = error,
@@ -479,64 +497,66 @@ object AttestationChecker {
 
     // ---------------------------------------------------------------- 吊销校验
 
-    private data class Revocation(val revoked: Boolean, val reason: String, val text: String)
+    private data class Revocation(
+        val revoked: Boolean,
+        val reason: String,
+        val known: Boolean,
+        val stale: Boolean,
+        val fetchedAt: Long?,
+        val count: Int?,
+        val text: String,
+    )
 
     /**
-     * 联网拉取 Google 官方的吊销列表（https://android.googleapis.com/attestation/status）。
-     * 网络不可用时退回内置快照，并在结果里标明数据来源。
+     * 只做本地查询：列表来自 [RevocationStore] 的缓存，命中即已吊销。
+     * 没有缓存时给出「未校验」，不假装通过。
      */
-    private fun checkRevocation(context: Context, serial: BigInteger): Revocation {
-        val key = serial.toString().lowercase(Locale.US)
-        val online = runCatching { fetchOnlineStatus() }.getOrNull()
-        val table = online ?: loadSnapshot(context)
-        val source = if (online != null) "在线校验" else "离线校验（内置快照）"
-        val reason = table?.get(key)
+    private fun checkRevocation(
+        snapshot: RevocationStore.Snapshot?,
+        serial: BigInteger,
+    ): Revocation {
+        if (snapshot == null) {
+            return Revocation(
+                revoked = false,
+                reason = "",
+                known = false,
+                stale = true,
+                fetchedAt = null,
+                count = null,
+                text = "未校验：还没有获取过 Google 吊销列表，需要联网获取",
+            )
+        }
+        val reason = snapshot.reasonFor(serial)
+        val stale = snapshot.isStale()
+        val days = snapshot.ageDays()
         return when {
-            table == null -> Revocation(false, "", "无法获取吊销列表")
-            reason == null -> Revocation(false, "", "${source}通过")
-            else -> Revocation(true, reason.ifBlank { "REVOKED" }, "已吊销：${reason.ifBlank { "REVOKED" }}（$source）")
-        }
-    }
-
-    private fun fetchOnlineStatus(): Map<String, String> {
-        val connection = (URL(STATUS_URL).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 4_000
-            readTimeout = 6_000
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "RootToolbox")
-        }
-        return try {
-            if (connection.responseCode !in 200..299) {
-                throw IllegalStateException("HTTP ${connection.responseCode}")
-            }
-            val text = connection.inputStream.bufferedReader().use { it.readText() }
-            parseEntries(text)
-        } finally {
-            connection.disconnect()
-        }
-    }
-
-    private fun loadSnapshot(context: Context): Map<String, String>? {
-        cachedRevocation?.let { return it }
-        return synchronized(this) {
-            cachedRevocation ?: runCatching {
-                val text = context.assets.open(REVOCATION_ASSET).bufferedReader().use { it.readText() }
-                parseEntries(text).also { cachedRevocation = it }
-            }.getOrNull()
-        }
-    }
-
-    private fun parseEntries(text: String): Map<String, String> {
-        val entries = JSONObject(text).optJSONObject("entries") ?: return emptyMap()
-        return buildMap {
-            entries.keys().forEach { serial ->
-                val item = entries.optJSONObject(serial)
-                val status = item?.optString("status").orEmpty()
-                if (status.isNotEmpty()) {
-                    put(serial.lowercase(Locale.US), item?.optString("reason").orEmpty())
-                }
-            }
+            reason != null -> Revocation(
+                revoked = true,
+                reason = reason.ifBlank { "REVOKED" },
+                known = true,
+                stale = stale,
+                fetchedAt = snapshot.fetchedAt,
+                count = snapshot.count,
+                text = "已吊销：${reason.ifBlank { "REVOKED" }}（列表更新于 ${formatTime(snapshot.fetchedAt)}）",
+            )
+            stale -> Revocation(
+                revoked = false,
+                reason = "",
+                known = true,
+                stale = true,
+                fetchedAt = snapshot.fetchedAt,
+                count = snapshot.count,
+                text = "未命中吊销记录，但列表已过期（${days} 天前更新），建议获取最新吊销列表",
+            )
+            else -> Revocation(
+                revoked = false,
+                reason = "",
+                known = true,
+                stale = false,
+                fetchedAt = snapshot.fetchedAt,
+                count = snapshot.count,
+                text = "校验通过（列表更新于 ${formatTime(snapshot.fetchedAt)}，共 ${snapshot.count} 条）",
+            )
         }
     }
 
