@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
 import dev.mochi.rootbox.ui.AboutScreen
 import dev.mochi.rootbox.ui.BackupScreen
+import dev.mochi.rootbox.ui.DexoptScreen
 import dev.mochi.rootbox.ui.DiagnosticsScreen
 import dev.mochi.rootbox.ui.EnvironmentScreen
 import dev.mochi.rootbox.ui.HomeScreen
@@ -31,6 +32,8 @@ import dev.mochi.rootbox.ui.InstallPreviewScreen
 import dev.mochi.rootbox.ui.AttestationScreen
 import dev.mochi.rootbox.ui.KeysScreen
 import dev.mochi.rootbox.ui.ModuleScreen
+import dev.mochi.rootbox.ui.ModuleCatalogScreen
+import dev.mochi.rootbox.ui.ModuleDownloadsScreen
 import dev.mochi.rootbox.ui.ModuleUpdateScreen
 import dev.mochi.rootbox.ui.SettingsScreen
 import dev.mochi.rootbox.ui.TargetScreen
@@ -65,6 +68,9 @@ private const val RouteSettings = "settings"
 private const val RouteBackup = "backup"
 private const val RouteAttestation = "attestation"
 private const val RouteModuleUpdates = "module-updates"
+private const val RouteModuleCatalog = "module-catalog"
+private const val RouteModuleDownloads = "module-downloads"
+private const val RouteDexopt = "dexopt"
 private const val RouteKeys = "keys"
 private const val RoutePreview = "preview"
 
@@ -74,6 +80,8 @@ private const val SourceModule = "home/module"
 private const val SourceDiagnostics = "home/diagnostics"
 private const val SourceAttestation = "home/attestation"
 private const val SourceModuleUpdates = "home/module-updates"
+private const val SourceModuleCatalog = "home/module-catalog"
+private const val SourceDexopt = "home/dexopt"
 
 @Composable
 fun RootToolboxApp(viewModel: AppViewModel) {
@@ -206,6 +214,8 @@ private fun HomeTab(
                 onOpenDiagnostics = { nav.push(RouteDiagnostics, from = SourceDiagnostics) },
                 onOpenAttestation = { nav.push(RouteAttestation, from = SourceAttestation) },
                 onOpenModuleUpdates = { nav.push(RouteModuleUpdates, from = SourceModuleUpdates) },
+                onOpenModuleCatalog = { nav.push(RouteModuleCatalog, from = SourceModuleCatalog) },
+                onOpenDexopt = { nav.push(RouteDexopt, from = SourceDexopt) },
                 onOpenAbout = { nav.push(RouteAbout) },
             )
 
@@ -221,6 +231,15 @@ private fun HomeTab(
             RouteBackup -> BackupScreen(state, viewModel, back, showToast)
             RouteAttestation -> AttestationScreen(state, settings, viewModel, back, showToast)
             RouteModuleUpdates -> ModuleUpdateScreen(state, viewModel, back, showToast)
+            RouteModuleCatalog -> ModuleCatalogScreen(
+                state = state,
+                viewModel = viewModel,
+                navigationIcon = back,
+                onOpenDownloads = { nav.push(RouteModuleDownloads) },
+                showToast = showToast,
+            )
+            RouteModuleDownloads -> ModuleDownloadsScreen(state, viewModel, back, showToast)
+            RouteDexopt -> DexoptScreen(state, viewModel, back, showToast)
             RouteTarget -> TargetScreen(state, viewModel, back, showToast)
             RouteDiagnostics -> DiagnosticsScreen(state, viewModel, back, showToast)
             RouteAbout -> AboutScreen(back)
@@ -290,6 +309,9 @@ private fun titleFor(route: String): String = when (route) {
     RouteBackup -> "备份中心"
     RouteAttestation -> "密钥检测"
     RouteModuleUpdates -> "模块更新"
+    RouteModuleCatalog -> "模块下载"
+    RouteModuleDownloads -> "下载管理"
+    RouteDexopt -> "dex2oat 编译"
     RouteKeys -> "密钥库"
     RoutePreview -> "安装预览"
     else -> route

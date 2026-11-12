@@ -54,6 +54,8 @@ private const val SourceModule = "home/module"
 private const val SourceDiagnostics = "home/diagnostics"
 private const val SourceAttestation = "home/attestation"
 private const val SourceModuleUpdates = "home/module-updates"
+private const val SourceModuleCatalog = "home/module-catalog"
+private const val SourceDexopt = "home/dexopt"
 
 @Composable
 fun HomeScreen(
@@ -64,6 +66,8 @@ fun HomeScreen(
     onOpenDiagnostics: () -> Unit,
     onOpenAttestation: () -> Unit,
     onOpenModuleUpdates: () -> Unit,
+    onOpenModuleCatalog: () -> Unit,
+    onOpenDexopt: () -> Unit,
     onOpenAbout: () -> Unit,
 ) {
     val root = state.root
@@ -241,6 +245,35 @@ fun HomeScreen(
                         .takeIf { it > 0 }
                         ?.let { "$it 个更新" },
                     onClick = onOpenModuleUpdates,
+                )
+                HomeGridCard(
+                    modifier = Modifier.weight(1f),
+                    title = "模块下载",
+                    summary = "常见模块与管理器",
+                    icon = "download",
+                    iconContainer = scheme.primaryContainer,
+                    iconContent = scheme.onPrimaryContainer,
+                    sourceKey = SourceModuleCatalog,
+                    badge = "GitHub",
+                    onClick = onOpenModuleCatalog,
+                )
+            }
+        }
+
+        item(key = "grid-3") {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                HomeGridCard(
+                    modifier = Modifier.weight(1f),
+                    title = "dex2oat 编译",
+                    summary = "应用编译 · 模式与线程",
+                    icon = "flash",
+                    iconContainer = scheme.primaryContainer,
+                    iconContent = scheme.onPrimaryContainer,
+                    sourceKey = SourceDexopt,
+                    onClick = onOpenDexopt,
                 )
                 HomeGridCard(
                     modifier = Modifier.weight(1f),

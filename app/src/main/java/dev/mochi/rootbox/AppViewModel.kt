@@ -7,7 +7,17 @@ import androidx.lifecycle.viewModelScope
 import dev.mochi.rootbox.core.BackupEntry
 import dev.mochi.rootbox.core.BackupScan
 import dev.mochi.rootbox.core.BackupStore
+import dev.mochi.rootbox.core.DexoptApp
+import dev.mochi.rootbox.core.DexoptJob
+import dev.mochi.rootbox.core.DexoptMode
+import dev.mochi.rootbox.core.DexoptRunner
+import dev.mochi.rootbox.core.DexoptRuntime
+import dev.mochi.rootbox.core.DexoptScope
+import dev.mochi.rootbox.core.DexoptService
+import dev.mochi.rootbox.core.DexoptStore
+import dev.mochi.rootbox.core.DexoptThreads
 import dev.mochi.rootbox.core.DiagLog
+import dev.mochi.rootbox.core.listDexoptApps
 import dev.mochi.rootbox.core.InstallResult
 import dev.mochi.rootbox.core.KeyboxInstaller
 import dev.mochi.rootbox.core.KeyboxMeta
@@ -15,6 +25,12 @@ import dev.mochi.rootbox.core.KeyboxParser
 import dev.mochi.rootbox.core.ModuleLoadChecker
 import dev.mochi.rootbox.core.ModuleLoadStatus
 import dev.mochi.rootbox.core.ModuleUpdateChecker
+import dev.mochi.rootbox.core.CatalogDownload
+import dev.mochi.rootbox.core.CatalogDownloadStore
+import dev.mochi.rootbox.core.CatalogIndex
+import dev.mochi.rootbox.core.CatalogModule
+import dev.mochi.rootbox.core.ModuleCatalogStore
+import dev.mochi.rootbox.core.ModuleRelease
 import dev.mochi.rootbox.core.ModuleUpdateItem
 import dev.mochi.rootbox.core.RevocationStore
 import dev.mochi.rootbox.core.DownloadedModule
@@ -41,6 +57,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.job
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -65,6 +82,34 @@ data class ModuleUpdateUi(
     val files: List<DownloadedModule> = emptyList(),
     /** 正在下载的模块 id -> 进度。 */
     val downloading: Map<String, DownloadProgress> = emptyMap(),
+)
+
+/** dex2oat 编译页的状态。 */
+data class DexoptUi(
+    val apps: List<DexoptApp> = emptyList(),
+    val loadingApps: Boolean = false,
+    val selected: Set<String> = emptySet(),
+    val scope: DexoptScope = DexoptScope.CURRENT_USER,
+    val mode: DexoptMode = DexoptMode.SPEED_PROFILE,
+    val threads: DexoptThreads = DexoptThreads.SYSTEM,
+    val runtime: DexoptRuntime = DexoptRuntime(),
+    val savedJob: DexoptJob? = null,
+    val error: String? = null,
+)
+
+/** 模块下载页的状态。 */
+data class CatalogUi(
+    val index: CatalogIndex = CatalogIndex(1, null, emptyList(), emptyList()),
+    val indexSource: String = "内置",
+    val indexAt: Long = 0L,
+    val loadingIndex: Boolean = false,
+    val releases: Map<String, ModuleRelease> = emptyMap(),
+    val loadingReleases: Boolean = false,
+    val releaseChecked: Int = 0,
+    val releaseTotal: Int = 0,
+    val error: String? = null,
+    val downloading: Map<String, DownloadProgress> = emptyMap(),
+    val files: List<CatalogDownload> = emptyList(),
 )
 
 data class DownloadProgress(
@@ -104,6 +149,8 @@ data class AppState(
     val revocationCount: Int = 0,
     val revocationUpdating: Boolean = false,
     val moduleUpdates: ModuleUpdateUi = ModuleUpdateUi(),
+    val catalog: CatalogUi = CatalogUi(),
+    val dexopt: DexoptUi = DexoptUi(),
 ) {
     val allItems: List<KeyboxItem> get() = sources.flatMap { it.items }
 }
@@ -124,6 +171,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** 最近一次成功写入的 SHA-256，用于模块加载检测的对照。 */
     private var lastWrittenSha: String? = null
 
+    init {
+        // dex2oat 执行器是单例，界面只镜像它的状态。
+        viewModelScope.launch {
+            DexoptRunner.state.collect { runtime ->
+                _state.update { it.copy(dexopt = it.dexopt.copy(runtime = runtime)) }
+            }
+        }
+    }
+
     private var started = false
 
     fun start() {
@@ -131,6 +187,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (started) return
         started = true
         refreshRevocationInfo()
+        _state.update {
+            it.copy(dexopt = it.dexopt.copy(savedJob = DexoptStore.load(getApplication())))
+        }
         if (_settings.value.autoCheckRoot) {
             refreshRoot()
             runAttestation()
@@ -651,6 +710,306 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // ---------------------------------------------------------------- dex2oat 编译
+
+    fun loadDexoptApps() {
+        if (_state.value.dexopt.loadingApps) return
+        viewModelScope.launch {
+            _state.update { it.copy(dexopt = it.dexopt.copy(loadingApps = true, error = null)) }
+            val includeSystem = _state.value.dexopt.scope == DexoptScope.ALL_USERS_SYSTEM
+            val apps = withContext(Dispatchers.IO) {
+                runCatching { listDexoptApps(getApplication(), includeSystem) }
+            }
+            _state.update { state ->
+                val list = apps.getOrNull().orEmpty()
+                state.copy(
+                    dexopt = state.dexopt.copy(
+                        apps = list,
+                        loadingApps = false,
+                        selected = if (state.dexopt.selected.isEmpty()) {
+                            list.filterNot { it.isSystem }.map { it.packageName }.toSet()
+                        } else {
+                            state.dexopt.selected.intersect(list.map { it.packageName }.toSet())
+                        },
+                        error = apps.exceptionOrNull()?.let { "读取应用列表失败：${it.message}" },
+                    ),
+                )
+            }
+        }
+    }
+
+    fun setDexoptScope(scope: DexoptScope) {
+        val previous = _state.value.dexopt.scope
+        _state.update { it.copy(dexopt = it.dexopt.copy(scope = scope, selected = emptySet())) }
+        if ((previous == DexoptScope.ALL_USERS_SYSTEM) != (scope == DexoptScope.ALL_USERS_SYSTEM)) {
+            loadDexoptApps()
+        }
+    }
+
+    fun setDexoptMode(mode: DexoptMode) {
+        _state.update { it.copy(dexopt = it.dexopt.copy(mode = mode)) }
+    }
+
+    fun setDexoptThreads(threads: DexoptThreads) {
+        _state.update { it.copy(dexopt = it.dexopt.copy(threads = threads)) }
+    }
+
+    fun toggleDexoptApp(packageName: String) {
+        _state.update { state ->
+            val selected = state.dexopt.selected.toMutableSet()
+            if (!selected.add(packageName)) selected.remove(packageName)
+            state.copy(dexopt = state.dexopt.copy(selected = selected))
+        }
+    }
+
+    fun selectAllDexoptApps() {
+        _state.update { state ->
+            state.copy(dexopt = state.dexopt.copy(selected = state.dexopt.apps.map { it.packageName }.toSet()))
+        }
+    }
+
+    fun clearDexoptSelection() {
+        _state.update { it.copy(dexopt = it.dexopt.copy(selected = emptySet())) }
+    }
+
+    fun startDexopt() {
+        val ui = _state.value.dexopt
+        if (ui.runtime.running) return
+        if (_state.value.root?.granted != true) {
+            _state.update { it.copy(message = "dex2oat 需要 Root 权限") }
+            return
+        }
+        val packages = ui.selected.toList()
+        if (packages.isEmpty()) {
+            _state.update { it.copy(message = "请先选择要编译的应用") }
+            return
+        }
+        val labels = ui.apps.associate { it.packageName to it.label }
+        val job = DexoptJob(
+            id = System.currentTimeMillis().toString(),
+            packages = packages,
+            labels = labels,
+            mode = ui.mode.name,
+            threads = ui.threads.value,
+            scope = ui.scope.name,
+        )
+        DexoptService.start(getApplication())
+        DexoptRunner.start(getApplication(), job)
+        _state.update { it.copy(dexopt = it.dexopt.copy(savedJob = job, error = null)) }
+    }
+
+    fun pauseDexopt() {
+        DexoptRunner.cancel(getApplication())
+        _state.update { it.copy(dexopt = it.dexopt.copy(savedJob = DexoptStore.load(getApplication()))) }
+    }
+
+    /** 继续上次中断的任务（只跑还没完成的包）。 */
+    fun resumeDexopt() {
+        val job = DexoptStore.load(getApplication()) ?: return
+        if (job.remaining().isEmpty()) {
+            _state.update { it.copy(message = "上次的任务已经完成") }
+            return
+        }
+        if (_state.value.root?.granted != true) {
+            _state.update { it.copy(message = "dex2oat 需要 Root 权限") }
+            return
+        }
+        DexoptService.start(getApplication())
+        DexoptRunner.start(getApplication(), job.copy(status = "running"))
+        _state.update { it.copy(dexopt = it.dexopt.copy(savedJob = job)) }
+    }
+
+    fun clearDexoptJob() {
+        DexoptStore.clear(getApplication())
+        _state.update { it.copy(dexopt = it.dexopt.copy(savedJob = null)) }
+    }
+
+    // ---------------------------------------------------------------- 模块下载
+
+    /** 先用本地/内置索引把页面填出来，索引过期时再联网刷新，然后查最新版本。 */
+    fun loadCatalog(force: Boolean = false) {
+        if (_state.value.catalog.loadingIndex || _state.value.catalog.loadingReleases) return
+        viewModelScope.launch {
+            val local = withContext(Dispatchers.IO) { ModuleCatalogStore.loadIndex(getApplication()) }
+            _state.update {
+                it.copy(
+                    catalog = it.catalog.copy(
+                        index = local.index,
+                        indexSource = local.source,
+                        indexAt = local.fetchedAt,
+                    ),
+                )
+            }
+            if (force || ModuleCatalogStore.isIndexStale(local)) {
+                _state.update { it.copy(catalog = it.catalog.copy(loadingIndex = true, error = null)) }
+                val refreshed = withContext(Dispatchers.IO) {
+                    runCatching { ModuleCatalogStore.refreshIndex(getApplication()) }
+                }
+                _state.update { state ->
+                    val result = refreshed.getOrNull()
+                    state.copy(
+                        catalog = state.catalog.copy(
+                            index = result?.index ?: state.catalog.index,
+                            indexSource = result?.source ?: state.catalog.indexSource,
+                            indexAt = result?.fetchedAt ?: state.catalog.indexAt,
+                            loadingIndex = false,
+                            error = if (result == null) "索引更新失败，已使用本地副本" else null,
+                        ),
+                    )
+                }
+            }
+            fetchCatalogReleases(force)
+            refreshCatalogFiles()
+        }
+    }
+
+    private suspend fun fetchCatalogReleases(force: Boolean) {
+        val repos = _state.value.catalog.index.modules.map { it.repo }
+        if (repos.isEmpty()) return
+        _state.update {
+            it.copy(
+                catalog = it.catalog.copy(
+                    loadingReleases = true,
+                    releaseChecked = 0,
+                    releaseTotal = repos.size,
+                ),
+            )
+        }
+        val cached = withContext(Dispatchers.IO) { ModuleCatalogStore.loadReleases(getApplication()) }
+        _state.update { it.copy(catalog = it.catalog.copy(releases = cached)) }
+        val result = withContext(Dispatchers.IO) {
+            runCatching {
+                ModuleCatalogStore.refreshReleases(getApplication(), repos, force) { done, total ->
+                    _state.update { state ->
+                        state.copy(
+                            catalog = state.catalog.copy(
+                                releaseChecked = done,
+                                releaseTotal = total,
+                                releases = ModuleCatalogStore.loadReleases(getApplication()),
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+        _state.update { state ->
+            state.copy(
+                catalog = state.catalog.copy(
+                    loadingReleases = false,
+                    releases = result.getOrNull() ?: state.catalog.releases,
+                    error = result.exceptionOrNull()?.let { "部分版本查询失败：${it.message}" },
+                ),
+            )
+        }
+    }
+
+    fun refreshCatalogFiles() {
+        viewModelScope.launch {
+            val files = withContext(Dispatchers.IO) { CatalogDownloadStore.list(getApplication()) }
+            _state.update { it.copy(catalog = it.catalog.copy(files = files)) }
+        }
+    }
+
+    /** 下载模块 / 管理器安装包到 app 私有目录，支持取消与实时进度。 */
+    fun downloadCatalogModule(module: CatalogModule) {
+        val release = _state.value.catalog.releases[module.repo] ?: return
+        val asset = release.asset ?: return
+        val id = module.id
+        if (_state.value.catalog.downloading.containsKey(id)) return
+        val fileName = CatalogDownloadStore.fileName(id, release.tag, asset.name)
+        val job = viewModelScope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            _state.update { state ->
+                state.copy(
+                    catalog = state.catalog.copy(
+                        downloading = state.catalog.downloading + (
+                            id to DownloadProgress(fileName, 0, asset.size, 0f)
+                        ),
+                    ),
+                )
+            }
+            try {
+                val bytes = Http.getBytes(asset.url) { read, total ->
+                    val fraction = if (total > 0) read.toFloat() / total.toFloat() else 0f
+                    _state.update { state ->
+                        val current = state.catalog.downloading[id] ?: return@update state
+                        state.copy(
+                            catalog = state.catalog.copy(
+                                downloading = state.catalog.downloading + (
+                                    id to current.copy(read = read, total = total, fraction = fraction)
+                                ),
+                            ),
+                        )
+                    }
+                }
+                if (kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]?.isActive == false) {
+                    throw DownloadCancelledException()
+                }
+                CatalogDownloadStore.save(getApplication(), fileName, bytes)
+                _state.update { state ->
+                    state.copy(
+                        catalog = state.catalog.copy(
+                            downloading = state.catalog.downloading - id,
+                            files = CatalogDownloadStore.list(getApplication()),
+                        ),
+                        message = "已下载 $fileName",
+                    )
+                }
+            } catch (t: DownloadCancelledException) {
+                _state.update { state ->
+                    state.copy(catalog = state.catalog.copy(downloading = state.catalog.downloading - id))
+                }
+            } catch (t: kotlinx.coroutines.CancellationException) {
+                _state.update { state ->
+                    state.copy(catalog = state.catalog.copy(downloading = state.catalog.downloading - id))
+                }
+            } catch (t: Throwable) {
+                DiagLog.error("catalog", "$id 下载失败", t)
+                _state.update { state ->
+                    state.copy(
+                        catalog = state.catalog.copy(downloading = state.catalog.downloading - id),
+                        message = "下载失败：${t.javaClass.simpleName}: ${t.message}",
+                    )
+                }
+            } finally {
+                val self = kotlinx.coroutines.currentCoroutineContext().job
+                catalogJobs.remove(id, self)
+            }
+        }
+        catalogJobs[id] = job
+        job.start()
+    }
+
+    fun cancelCatalogDownload(id: String) {
+        val job = catalogJobs.remove(id) ?: return
+        job.cancel()
+        _state.update { state ->
+            state.copy(catalog = state.catalog.copy(downloading = state.catalog.downloading - id))
+        }
+    }
+
+    fun deleteCatalogFile(file: CatalogDownload) {
+        if (CatalogDownloadStore.delete(file.path)) {
+            _state.update { state ->
+                state.copy(
+                    catalog = state.catalog.copy(files = CatalogDownloadStore.list(getApplication())),
+                    message = "已删除 ${file.name}",
+                )
+            }
+        } else {
+            _state.update { it.copy(message = "删除失败：${file.name}") }
+        }
+    }
+
+    fun clearCatalogFiles() {
+        val count = CatalogDownloadStore.clear(getApplication())
+        _state.update { state ->
+            state.copy(
+                catalog = state.catalog.copy(files = CatalogDownloadStore.list(getApplication())),
+                message = "已清空 $count 个文件",
+            )
+        }
+    }
+
     // ---------------------------------------------------------------- 模块更新检查
 
     /** 只列本地已下载的 zip：不联网、不扫描模块，进入页面时刷新即可。 */
@@ -722,6 +1081,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 下载中的 Job，按模块 id 存；IO 线程会读取消集合，所以用并发容器。 */
     private val downloadJobs = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Job>()
+    private val catalogJobs = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Job>()
 
     /** 下载 zip 到 app 私有目录，UI 展示实时进度。 */
     fun downloadModuleUpdate(item: ModuleUpdateItem) {

@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "updatedAt": "2026-11-12",
+  "categories": [
+    { "id": "root", "title": "常用 Root 管理器", "order": 1 },
+    { "id": "zygisk", "title": "Zygisk 实现", "order": 2 },
+    { "id": "lsposed", "title": "LSPosed 框架", "order": 3 },
+    { "id": "hide", "title": "隐藏应用列表", "order": 4 },
+    { "id": "meta", "title": "元模块", "order": 5 },
+    { "id": "tee", "title": "TEE 模拟", "order": 6 },
+    { "id": "ad", "title": "广告屏蔽", "order": 7 }
+  ],
+  "modules": [
+    {
+      "id": "apatch",
+      "name": "APatch",
+      "category": "root",
+      "repo": "bmax121/APatch",
+      "description": "基于内核补丁的 Root 方案，支持模块"
+    },
+    {
+      "id": "aster",
+      "name": "Aster",
+      "category": "root",
+      "repo": "LyraVoid/Aster",
+      "description": "基于 KernelPatch 的单 UI Root 管理器"
+    },
+    {
+      "id": "bakasu",
+      "name": "BakaSU",
+      "category": "root",
+      "repo": "Baka-SU/BakaSU",
+      "description": "基于 KernelSU 的 Root 方案（ReSukiSU 分支）"
+    },
+    {
+      "id": "folkpatch",
+      "name": "FolkPatch",
+      "category": "root",
+      "repo": "LyraVoid/FolkPatch",
+      "description": "通过修补 Boot 镜像获取 Root"
+    },
+    {
+      "id": "kernelsu",
+      "name": "KernelSU",
+      "category": "root",
+      "repo": "tiann/KernelSU",
+      "description": "内核级 Root 方案"
+    },
+    {
+      "id": "kernelsu-next",
+      "name": "KernelSU-Next",
+      "category": "root",
+      "repo": "KernelSU-Next/KernelSU-Next",
+      "description": "KernelSU 的社区续作"
+    },
+    {
+      "id": "magisk",
+      "name": "Magisk",
+      "category": "root",
+      "repo": "topjohnwu/Magisk",
+      "description": "经典系统级 Root 与模块管理器"
+    },
+    {
+      "id": "magisk-alpha",
+      "name": "Magisk-Alpha",
+      "category": "root",
+      "repo": "vvb2060/Magisk",
+      "description": "Magisk 的测试分支"
+    },
+    {
+      "id": "sukisu",
+      "name": "SukiSU",
+      "category": "root",
+      "repo": "SukiSU-Ultra/SukiSU-Ultra",
+      "description": "基于 KernelSU 的 Root 方案，支持 KPM"
+    },
+    {
+      "id": "zygisk-next",
+      "name": "Zygisk-Next",
+      "category": "zygisk",
+      "repo": "Dr-TSNG/ZygiskNext",
+      "description": "独立于 Magisk 的 Zygisk 实现"
+    },
+    {
+      "id": "lsposed",
+      "name": "LSPosed",
+      "category": "lsposed",
+      "repo": "LSPosed/LSPosed",
+      "description": "基于 Zygisk / Riru 的 Xposed 框架"
+    },
+    {
+      "id": "vector",
+      "name": "Vector",
+      "category": "lsposed",
+      "repo": "JingMatrix/Vector",
+      "description": "LSPosed 的现代化重构版本"
+    },
+    {
+      "id": "hma",
+      "name": "HMA",
+      "category": "hide",
+      "repo": "Dr-TSNG/Hide-My-Applist",
+      "description": "隐藏应用列表，防止检测"
+    },
+    {
+      "id": "hma-oss",
+      "name": "HMA-OSS",
+      "category": "hide",
+      "repo": "frknkrc44/HMA-OSS",
+      "description": "HMA 的开源分支"
+    },
+    {
+      "id": "magicmount",
+      "name": "MagicMount",
+      "category": "meta",
+      "repo": "5ec1cff/MagicMountStandalone",
+      "description": "独立模块挂载工具"
+    },
+    {
+      "id": "mountify",
+      "name": "Mountify",
+      "category": "meta",
+      "repo": "backslashxx/mountify",
+      "description": "通过 OverlayFS 全局挂载模块"
+    },
+    {
+      "id": "nomount",
+      "name": "NoMount",
+      "category": "meta",
+      "repo": "maxsteeel/nomount",
+      "description": "VFS 路径重定向框架，免挂载注入模块"
+    },
+    {
+      "id": "tricky-store",
+      "name": "Tricky Store",
+      "category": "tee",
+      "repo": "5ec1cff/TrickyStore",
+      "description": "证书链与密钥认证模拟"
+    },
+    {
+      "id": "tricky-store-oss",
+      "name": "TrickyStore-OSS",
+      "category": "tee",
+      "repo": "beakthoven/TrickyStoreOSS",
+      "description": "Tricky Store 的开源替代实现"
+    },
+    {
+      "id": "tricky-addon-enhanced",
+      "name": "Tricky Addon Enhanced",
+      "category": "tee",
+      "repo": "Enginex0/tricky-addon-enhanced",
+      "description": "Tricky Store 的增强配置插件",
+      "note": "辅助插件，可与 Tricky Store 一起安装"
+    }
+  ]
+}

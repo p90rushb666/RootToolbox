@@ -17,6 +17,8 @@
 - **密钥检测**：向系统取设备自己的 Google 认证密钥（AndroidKeystore attestation），**不读取 keybox.xml、不需要 Root**。页面最顶部显示根证书等级（谷歌远程密钥配置 / 谷歌硬件认证根证书 / AOSP软件认证根证书 / 三星Knox认证根证书 / OEM认证根证书 / 未知根证书），紧接着显示**引导加载程序是否锁定**，下面是证书链（使用者 / 不早于 / 不晚于 / 序列号 / 有效性）、可信执行环境、构建指纹、信任根（VerifiedBootKey / VerifiedBootHash / VerifiedBootState / deviceLocked）与认证质询。证书只在本机解析、不上传；**吊销状态用 Google 官方列表的本地缓存**判断：拉取一次后缓存 24 小时，过期会提示更新，可在设置或检测页手动「获取最新吊销列表」（国内网络可能需要 VPN）。每次冷启动自动检测一次，切换后台不重复检测，可在首页卡片手动重新检测。
 - **模块更新检查**：扫描 `/data/adb/modules/*/module.prop` 的 `updateJson`，同时对照对应仓库的 GitHub Release，提示可更新版本；可下载 zip 并在模块行内查看实时进度、随时取消，下载完成后按钮直接变成「打开 / 删除」。临时文件集中管理、支持一键清空（两级确认）。安装包只存 app 私有目录，不写入 `/data/adb`；**不提供刷写功能**。
 - **诊断**：内存日志（上限 600 条）、崩溃报告、一键复制完整诊断报告便于反馈问题。
+- **模块下载**：按分类浏览常见的 Root 管理器、Zygisk 实现、LSPosed、隐藏应用列表、元模块、TEE 模拟与广告屏蔽模块，组内按名称逐字母排序；每项联网查询 GitHub 最新 Release，显示版本号与安装包大小，支持实时下载进度、取消与「打开」；独立的「下载管理」页可打开 / 删除 / 一键清空。索引来自仓库的 `modules/index.json`，并内置一份兜底副本。
+- **dex2oat 编译**：选择范围（当前用户 / 所有用户 / 所有用户 + 系统）、模式（快速 / 热点 / 全量）与线程（系统档位 / 2 / 4 / 8 / 全开），可勾选单个应用（默认前 20 项可展开）；编译队列与进度持久化，中断后可从剩余应用继续。编译期间运行前台服务通知，并提供通知权限、电池优化白名单与无障碍保活的引导；通知会尝试写入小米超级岛 / ColorOS 流体云的 extras（系统不支持时静默退化）。需要 Root。
 - **设置**：深色模式、Monet 动态取色、主题主色、启动时检测开关、密钥检测明细开关与超时时间、备份保留数量、写入前凭据校验。
 
 界面全部基于 [mochi-compose](https://github.com/feice11/mochi-compose)：底部标签栏带融球水滴拖尾，切换板块用组件库 `MochiBlurCrossfade` 做纯淡入（`blur = 0.dp` 时不建离屏模糊图层，避免整页录制开销）；模块检查时则反过来，只让 `MochiListRow` 的 value 槽位走组件库默认的 8dp 模糊替换。两套参数各自按需使用。；首页为「Root 权限整行卡片 + 每行两个的目录卡片」布局，卡片带容器变形转场与按压形变/高光，列表、对话框、分段控件、开关、进度环等均使用库组件。
@@ -60,9 +62,11 @@
 
 ```
 app/src/main/java/dev/mochi/rootbox/
-├── core/        # Root 检测、Shell、模块扫描/加载/更新、Keybox 解析与安装、备份、密钥认证
+├── core/        # Root 检测、Shell、模块扫描/加载/更新、模块目录、dex2oat、Keybox、备份、密钥认证
 ├── data/        # 网络请求、设置、在线索引数据源、数据模型、安装预览模型
-├── ui/          # Compose 页面（首页、环境、模块、模块更新、密钥库、预览、备份、密钥检测、目标、诊断、设置、关于）
+├── ui/          # Compose 页面（首页、环境、模块、模块更新、模块下载、下载管理、dex2oat、密钥库、预览、备份、密钥检测、目标、诊断、设置、关于）
+
+modules/index.json  # 模块下载页的远程索引（同时打包进 APK 作兜底）
 ├── AppViewModel.kt
 ├── MainActivity.kt / RootToolboxApp.kt
 └── RootToolboxApplication.kt
@@ -100,8 +104,27 @@ app/src/main/java/dev/mochi/rootbox/
 
 > 该功能是「检查 + 下载 + 管理安装包」，不修改系统分区、不调用模块管理器，也不保证第三方 `updateJson` 的可用性与真实性。
 
+## 模块下载
+
+索引文件在仓库的 `modules/index.json`，应用按以下顺序取用：本地缓存（24 小时内）→ `raw.githubusercontent.com` → `cdn.jsdelivr.net` → APK 内置副本。改动索引只需改这个文件，不用发新版；条目格式：
+
+```json
+{ "id": "magisk", "name": "Magisk", "category": "root",
+  "repo": "topjohnwu/Magisk", "description": "经典系统级 Root 与模块管理器" }
+```
+
+版本号通过 `https://api.github.com/repos/{repo}/releases/latest` 查询，结果缓存 6 小时以减少 GitHub API 限流；资产优先取最大的 `.apk`，没有则取最大的 `.zip`。下载文件保存在 `files/module-downloads/`，通过 FileProvider 以 `content://` 交给系统安装器或文件查看器打开。
+
+## dex2oat 编译
+
+通过 `cmd package compile -m quicken|speed-profile|speed -f --user <id> <pkg>` 逐个应用编译；「所有用户」会先用 `pm list users` 取出全部用户 id。线程数通过临时 `setprop dalvik.vm.dex2oat-threads <n>` 生效，结束后还原为原值（部分 ROM 会忽略该属性）。任务队列、已完成与失败的包写入 `files/dexopt/job.json`，中断后页面会提示「上次任务未完成」并可从剩余应用继续。
+
+编译期间启动前台服务持有进度通知；通知同时写入小米 `miui.focus.*` 与 OPPO `com.oplus.notification.fluid.*` extras 尝试上岛/上云，系统不支持时会静默忽略。设置页可跳转通知权限、电池优化白名单与无障碍服务，用来降低被系统杀掉的概率。
+
 ## 已知限制与风险
 
+- **模块下载依赖 GitHub API**：未登录时每小时 60 次，列表第一次刷新会查询全部条目；结果缓存 6 小时，触发限流时页面会提示稍后再试。
+- **dex2oat 需要 Root**：`cmd package compile` 与 `setprop` 都要 root；线程控制是否生效取决于 ROM，编译失败会在任务里逐条记录。
 - **密钥检测依赖厂商密钥认证**：设备需要有可用的 TEE / StrongBox 与 Google 认证根；模拟器、部分无 GMS 认证的设备或 ROM 只能得到「未知根证书 / AOSP 软件认证根证书」，首页会显示「无效」并说明原因。
 - **吊销校验依赖缓存**：安装后第一次检测需要联网拉一次 Google 列表（国内网络可能需要 VPN）；之后 24 小时内直接用缓存。超过 24 小时会提示获取最新列表，但不会阻止查看结论，只是可能漏掉新吊销的密钥。完全没有缓存且联网失败时，徽标显示「未校验」。
 - **引导状态不影响有效/无效**：解锁 Bootloader 的设备仍可能拿到可信认证链，页面会用明细里的「引导加载程序」单独标注。

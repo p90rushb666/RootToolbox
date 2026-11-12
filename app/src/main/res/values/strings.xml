@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Root 工具箱</string>
+    <string name="accessibility_keep_alive_desc">仅用于在 dex2oat 编译期间提升本应用进程优先级，避免被系统回收；不会读取屏幕内容，也不会执行任何操作。</string>
 </resources>

@@ -12,8 +12,8 @@ android {
         applicationId = "dev.mochi.rootbox"
         minSdk = 29
         targetSdk = 36
-        versionCode = 5
-        versionName = "2.0.1"
+        versionCode = 6
+        versionName = "2.1.0"
     }
 
     buildTypes {
@@ -37,6 +37,8 @@ android {
         compose = true
         buildConfig = true
     }
+
+    sourceSets["main"].assets.srcDir(rootProject.file("modules"))
 
     packaging {
         resources.excludes += setOf("/META-INF/{AL2.0,LGPL2.1}")

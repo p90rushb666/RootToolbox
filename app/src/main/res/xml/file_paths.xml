@@ -2,4 +2,6 @@
 <paths>
     <!-- 模块更新下载的 zip 只放在 app 私有 files/module-updates 下，供「打开」临时授权给外部查看器 -->
     <files-path name="module-updates" path="module-updates/" />
+    <!-- 模块下载（管理器 apk / 模块 zip）放在 files/module-downloads，供「打开」临时授权 -->
+    <files-path name="module-downloads" path="module-downloads/" />
 </paths>
