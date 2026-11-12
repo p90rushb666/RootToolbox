@@ -7,6 +7,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.Locale
@@ -68,6 +69,9 @@ object ModuleCatalogStore {
     private const val INDEX_TTL_MS = 24 * 60 * 60 * 1000L
     private const val RELEASE_TTL_MS = 6 * 60 * 60 * 1000L
     private const val ASSET_TTL_MS = 6 * 60 * 60 * 1000L
+
+    /** 资产名里的 debug 标记（前后不能紧贴字母，避免误伤 nodebug 之类的名字）。 */
+    private val DEBUG_NAME = Regex("(^|[^a-z])debug([^a-z]|$)", RegexOption.IGNORE_CASE)
 
     private fun dir(context: Context): File =
         File(context.filesDir, "catalog").apply { mkdirs() }
@@ -201,31 +205,8 @@ object ModuleCatalogStore {
     }
 
     private suspend fun queryRelease(repo: String): ModuleRelease {
-        val url = "https://api.github.com/repos/$repo/releases/latest"
         return try {
-            val text = Http.getText(url)
-            val json = JSONObject(text)
-            val assets = json.optJSONArray("assets")?.let { array ->
-                (0 until array.length()).mapNotNull { i ->
-                    val item = array.optJSONObject(i) ?: return@mapNotNull null
-                    ReleaseAsset(
-                        name = item.optString("name"),
-                        size = item.optLong("size"),
-                        url = item.optString("browser_download_url"),
-                    )
-                }
-            }.orEmpty()
-            val asset = pickAsset(assets)
-            ModuleRelease(
-                repo = repo,
-                tag = json.optString("tag_name"),
-                title = json.optString("name").ifBlank { json.optString("tag_name") },
-                publishedAt = json.optString("published_at").takeIf { it.isNotBlank() },
-                pageUrl = json.optString("html_url"),
-                asset = asset,
-                fetchedAt = System.currentTimeMillis(),
-                error = if (asset == null) "该 Release 没有可下载的 apk / zip" else null,
-            )
+            toRelease(repo, fetchReleaseJson(repo))
         } catch (t: Throwable) {
             val message = t.message.orEmpty()
             ModuleRelease(
@@ -240,12 +221,67 @@ object ModuleCatalogStore {
         }
     }
 
+    /**
+     * 先看 Release 列表：取最新的**正式版**；只有预发布时才退回最新的预发布。
+     *
+     * 不用 `releases/latest` 的原因：某些仓库（例如 fork 或长期发 canary 的项目）
+     * 的 latest 会指向一个很旧的版本，和实际在维护的版本线不一致。
+     */
+    private suspend fun fetchReleaseJson(repo: String): JSONObject {
+        val listText = runCatching {
+            Http.getText("https://api.github.com/repos/$repo/releases?per_page=20")
+        }.getOrNull()
+        val list = listText?.let { runCatching { JSONArray(it) }.getOrNull() }
+        if (list != null && list.length() > 0) {
+            val all = (0 until list.length())
+                .mapNotNull { list.optJSONObject(it) }
+                .filter { !it.optBoolean("draft") }
+                .sortedByDescending { it.optString("published_at") }
+            val chosen = all.firstOrNull { !it.optBoolean("prerelease") } ?: all.firstOrNull()
+            if (chosen != null) return chosen
+        }
+        return JSONObject(Http.getText("https://api.github.com/repos/$repo/releases/latest"))
+    }
+
+    private fun toRelease(repo: String, json: JSONObject): ModuleRelease {
+        val assets = json.optJSONArray("assets")?.let { array ->
+            (0 until array.length()).mapNotNull { i ->
+                val item = array.optJSONObject(i) ?: return@mapNotNull null
+                ReleaseAsset(
+                    name = item.optString("name"),
+                    size = item.optLong("size"),
+                    url = item.optString("browser_download_url"),
+                )
+            }
+        }.orEmpty()
+        val asset = pickAsset(assets)
+        return ModuleRelease(
+            repo = repo,
+            tag = json.optString("tag_name"),
+            title = json.optString("name").ifBlank { json.optString("tag_name") },
+            publishedAt = json.optString("published_at").takeIf { it.isNotBlank() },
+            pageUrl = json.optString("html_url"),
+            asset = asset,
+            fetchedAt = System.currentTimeMillis(),
+            error = if (asset == null) "该 Release 没有可下载的 apk / zip" else null,
+        )
+    }
+
+    /**
+     * 同一个 Release 里常见 Debug 与 Release 两份产物（Debug 体积更大），
+     * 直接取最大文件会下到 Debug 包，因此先排除 debug 命名的资产，再优先 apk、其次 zip。
+     */
     private fun pickAsset(assets: List<ReleaseAsset>): ReleaseAsset? {
-        fun usable(name: String) = name.endsWith(".apk", true) || name.endsWith(".zip", true)
-        val apks = assets.filter { it.name.endsWith(".apk", true) && usable(it.name) }
-        if (apks.isNotEmpty()) return apks.maxByOrNull { it.size }
-        val zips = assets.filter { it.name.endsWith(".zip", true) && usable(it.name) }
-        return zips.maxByOrNull { it.size }
+        fun usable(asset: ReleaseAsset) =
+            asset.name.endsWith(".apk", true) || asset.name.endsWith(".zip", true)
+        fun isDebug(asset: ReleaseAsset) =
+            DEBUG_NAME.containsMatchIn(asset.name)
+
+        val pool = assets.filter(::usable)
+        if (pool.isEmpty()) return null
+        val preferred = pool.filterNot(::isDebug).ifEmpty { pool }
+        preferred.filter { it.name.endsWith(".apk", true) }.maxByOrNull { it.size }?.let { return it }
+        return preferred.filter { it.name.endsWith(".zip", true) }.maxByOrNull { it.size }
     }
 
     private fun parseRelease(repo: String, item: JSONObject): ModuleRelease {

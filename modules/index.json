@@ -151,6 +151,27 @@
       "repo": "Enginex0/tricky-addon-enhanced",
       "description": "Tricky Store 的增强配置插件",
       "note": "辅助插件，可与 Tricky Store 一起安装"
+    },
+    {
+      "id": "teesimulator",
+      "name": "TEE Simulator",
+      "category": "tee",
+      "repo": "JingMatrix/TEESimulator",
+      "description": "软件模拟硬件级密钥与密钥认证（上游主仓库）"
+    },
+    {
+      "id": "teesimulator-rs",
+      "name": "TEE Simulator-RS",
+      "category": "tee",
+      "repo": "Enginex0/TEESimulator-RS",
+      "description": "TEESimulator 的社区分支版本"
+    },
+    {
+      "id": "adguard-home",
+      "name": "AdGuard Home For Android",
+      "category": "ad",
+      "repo": "liuzq2002/Adguard-Home-For-Magisk-Mod",
+      "description": "AdGuard Home 的 Magisk 模块（春梦无痕维护）"
     }
   ]
 }
