@@ -183,12 +183,16 @@ object DexoptRunner {
 
         val packages = initial.remaining()
         val total = packages.size
+        // 本次运行的计数从 0 开始；job.done/failed 保持历史累计用于持久化。
+        // 若直接沿用 initial.done.size，继续任务时会出现「已完成 > 需要编译」。
+        var doneCount = 0
+        var failedCount = 0
         _state.value = DexoptRuntime(
             running = true,
             jobId = initial.id,
             total = total,
-            done = initial.done.size,
-            failed = initial.failed.size,
+            done = 0,
+            failed = 0,
             message = "准备编译 ${packages.size} 个应用",
         )
 
@@ -210,8 +214,8 @@ object DexoptRunner {
                 _state.value = _state.value.copy(
                     currentPackage = pkg,
                     currentLabel = label,
-                    done = job.done.size,
-                    failed = job.failed.size,
+                    done = doneCount,
+                    failed = failedCount,
                 )
                 var lastError: String? = null
                 // `cmd package compile` 不支持 `--user`（会报 unknown option 导致每次都失败），
@@ -222,14 +226,16 @@ object DexoptRunner {
                 )
                 if (!result.ok) lastError = result.brief().take(400)
                 job = if (lastError == null) {
+                    doneCount++
                     job.copy(done = job.done + pkg)
                 } else {
+                    failedCount++
                     job.copy(failed = job.failed + (pkg to lastError))
                 }
                 DexoptStore.save(context, job)
                 _state.value = _state.value.copy(
-                    done = job.done.size,
-                    failed = job.failed.size,
+                    done = doneCount,
+                    failed = failedCount,
                     message = "已处理 ${index + 1}/${packages.size}",
                 )
             }
@@ -246,6 +252,24 @@ object DexoptRunner {
             }
             val finalJob = job.copy(status = if (cancelled) "paused" else "finished")
             DexoptStore.save(context, finalJob)
+            if (!cancelled) {
+                // 编译完成：写入一份报告，记录本次任务的完整情况。
+                DexoptReportStore.append(
+                    context,
+                    DexoptReport(
+                        id = finalJob.id.toLongOrNull() ?: System.currentTimeMillis(),
+                        startedAt = finalJob.startedAt,
+                        finishedAt = System.currentTimeMillis(),
+                        scope = finalJob.scope,
+                        mode = finalJob.mode,
+                        threads = finalJob.threads,
+                        total = finalJob.packages.size,
+                        done = finalJob.done.size,
+                        failed = finalJob.failed.size,
+                        failedDetail = finalJob.failed,
+                    ),
+                )
+            }
             _state.value = _state.value.copy(
                 running = false,
                 currentLabel = null,
@@ -264,5 +288,98 @@ object DexoptRunner {
             process.waitFor()
             text.takeIf { it.isNotEmpty() }
         }.getOrNull()
+    }
+}
+
+/** dex2oat 的编译参数（范围 / 模式 / 线程）持久化，下次进入页面恢复上次选择。 */
+object DexoptPrefs {
+    private const val NAME = "dexopt_prefs"
+
+    fun loadScope(context: Context): DexoptScope =
+        DexoptScope.entries.firstOrNull { it.name == prefs(context).getString("scope", null) }
+            ?: DexoptScope.CURRENT_USER
+
+    fun loadMode(context: Context): DexoptMode =
+        DexoptMode.entries.firstOrNull { it.name == prefs(context).getString("mode", null) }
+            ?: DexoptMode.SPEED_PROFILE
+
+    fun loadThreads(context: Context): DexoptThreads =
+        DexoptThreads.entries.firstOrNull { it.value == prefs(context).getInt("threads", -1) }
+            ?: DexoptThreads.SYSTEM
+
+    fun save(context: Context, scope: DexoptScope, mode: DexoptMode, threads: DexoptThreads) {
+        prefs(context).edit()
+            .putString("scope", scope.name)
+            .putString("mode", mode.name)
+            .putInt("threads", threads.value)
+            .apply()
+    }
+
+    private fun prefs(context: Context) = context.getSharedPreferences(NAME, Context.MODE_PRIVATE)
+}
+
+/** 一次编译的完成报告。 */
+data class DexoptReport(
+    val id: Long,
+    val startedAt: Long,
+    val finishedAt: Long,
+    val scope: String,
+    val mode: String,
+    val threads: Int,
+    val total: Int,
+    val done: Int,
+    val failed: Int,
+    val failedDetail: Map<String, String> = emptyMap(),
+)
+
+/** 编译报告持久化，最多保留最近 50 条。 */
+object DexoptReportStore {
+    private fun file(context: Context): File =
+        File(context.filesDir, "dexopt").apply { mkdirs() }.resolve("reports.json")
+
+    fun load(context: Context): List<DexoptReport> = runCatching {
+        val f = file(context)
+        if (!f.isFile) return emptyList()
+        val arr = org.json.JSONArray(f.readText())
+        (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            val failedDetail = o.optJSONObject("failedDetail")?.let { obj ->
+                buildMap { obj.keys().forEach { put(it, obj.optString(it)) } }
+            }.orEmpty()
+            DexoptReport(
+                id = o.optLong("id"),
+                startedAt = o.optLong("startedAt"),
+                finishedAt = o.optLong("finishedAt"),
+                scope = o.optString("scope"),
+                mode = o.optString("mode"),
+                threads = o.optInt("threads"),
+                total = o.optInt("total"),
+                done = o.optInt("done"),
+                failed = o.optInt("failed"),
+                failedDetail = failedDetail,
+            )
+        }
+    }.getOrDefault(emptyList())
+
+    fun append(context: Context, report: DexoptReport) {
+        runCatching {
+            val list = (load(context) + report).takeLast(50)
+            val arr = org.json.JSONArray()
+            list.forEach { r ->
+                arr.put(org.json.JSONObject().apply {
+                    put("id", r.id)
+                    put("startedAt", r.startedAt)
+                    put("finishedAt", r.finishedAt)
+                    put("scope", r.scope)
+                    put("mode", r.mode)
+                    put("threads", r.threads)
+                    put("total", r.total)
+                    put("done", r.done)
+                    put("failed", r.failed)
+                    put("failedDetail", org.json.JSONObject().apply { r.failedDetail.forEach { (k, v) -> put(k, v) } })
+                })
+            }
+            file(context).writeText(arr.toString())
+        }
     }
 }

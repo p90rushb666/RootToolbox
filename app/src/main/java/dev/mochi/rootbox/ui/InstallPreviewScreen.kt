@@ -118,6 +118,43 @@ fun InstallPreviewScreen(
             return@MochiLazyCompactTitleScaffold
         }
 
+        // 关键操作置顶：确认替换 / 仅查看放在最显眼的位置，一眼看到就能决定。
+        item(key = "actions") {
+            ui.feice.mochi.list.MochiListCard {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp, vertical = 16.dp),
+                ) {
+                    val enabled = preview.canConfirm
+                    MochiButton(
+                        onClick = { confirmVisible = true },
+                        style = MochiButtonStyle.Filled,
+                        enabled = enabled,
+                    ) {
+                        Text(if (enabled) "确认替换" else "校验未通过，无法替换")
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    MochiButton(
+                        onClick = {
+                            viewModel.cancelPreview()
+                            onDone()
+                            showToast("已取消，未修改设备")
+                        },
+                        style = MochiButtonStyle.Tonal,
+                    ) { Text("仅查看，不写入") }
+                    if (!enabled) {
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            "请返回列表换一个来源；结构无效或哈希不一致的内容不会写入设备。",
+                            style = MochiTheme.textStyles.footnote,
+                            color = MochiTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+
         mochiListSection(
             key = "source",
             header = "来源",
@@ -257,42 +294,6 @@ fun InstallPreviewScreen(
                                 color = MochiTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                    }
-                }
-            }
-        }
-
-        item(key = "actions") {
-            ui.feice.mochi.list.MochiListCard {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 18.dp, vertical = 16.dp),
-                ) {
-                    val enabled = preview.canConfirm
-                    MochiButton(
-                        onClick = { confirmVisible = true },
-                        style = MochiButtonStyle.Filled,
-                        enabled = enabled,
-                    ) {
-                        Text(if (enabled) "确认替换" else "校验未通过，无法替换")
-                    }
-                    Spacer(Modifier.height(10.dp))
-                    MochiButton(
-                        onClick = {
-                            viewModel.cancelPreview()
-                            onDone()
-                            showToast("已取消，未修改设备")
-                        },
-                        style = MochiButtonStyle.Tonal,
-                    ) { Text("仅查看，不写入") }
-                    if (!enabled) {
-                        Spacer(Modifier.height(10.dp))
-                        Text(
-                            "请返回列表换一个来源；结构无效或哈希不一致的内容不会写入设备。",
-                            style = MochiTheme.textStyles.footnote,
-                            color = MochiTheme.colorScheme.onSurfaceVariant,
-                        )
                     }
                 }
             }

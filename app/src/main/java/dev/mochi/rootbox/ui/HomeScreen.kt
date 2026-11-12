@@ -163,6 +163,49 @@ fun HomeScreen(
             }
         }
 
+        // 编译进行中 / 有上次任务时，在首页顶部醒目展示进度，点进 dex2oat 页。
+        val dexoptUi = state.dexopt
+        val savedJob = dexoptUi.savedJob
+        if (dexoptUi.runtime.running || savedJob != null) {
+            item(key = "compile-status") {
+                MochiListCard(modifier = Modifier.mochiNavSource(SourceDexopt, cardCorner, cardColor)) {
+                    MochiListRow(
+                        title = "dex2oat 编译",
+                        subtitle = when {
+                            dexoptUi.runtime.running ->
+                                dexoptUi.runtime.currentLabel?.let { "正在编译 $it" } ?: "正在编译…"
+                            savedJob?.finished == true ->
+                                "已完成：成功 ${savedJob.done.size} · 失败 ${savedJob.failed.size}"
+                            else -> "上次未完成：剩余 ${savedJob?.remaining()?.size ?: 0} 个应用"
+                        },
+                        value = when {
+                            dexoptUi.runtime.running -> "${dexoptUi.runtime.done + dexoptUi.runtime.failed}/${dexoptUi.runtime.total}"
+                            savedJob?.finished == true -> "完成"
+                            else -> "继续"
+                        },
+                        leading = { MochiIonicon("flash", style = MochiIconStyle.Filled) },
+                        chevron = true,
+                        status = {
+                            if (dexoptUi.runtime.running) {
+                                MochiListStatusChip(
+                                    text = "编译中",
+                                    containerColor = scheme.primaryContainer,
+                                    contentColor = scheme.onPrimaryContainer,
+                                )
+                            } else if (savedJob?.finished == true) {
+                                MochiListStatusChip(
+                                    text = "完成",
+                                    containerColor = scheme.primaryContainer,
+                                    contentColor = scheme.onPrimaryContainer,
+                                )
+                            }
+                        },
+                        onClick = onOpenDexopt,
+                    )
+                }
+            }
+        }
+
         // 其余入口改成 demo 首页那种每行两个的长方形卡片。
         item(key = "grid-1") {
             Row(

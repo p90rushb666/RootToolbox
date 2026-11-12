@@ -65,7 +65,14 @@ class DexoptService : Service() {
         }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_NOT_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 复用同一个 service（上一次 stopSelf 还没完全销毁）时 onCreate 不会重跑，
+        // 但通知已经在 stopForeground 里被移除——这里重新持有前台通知并重置状态，
+        // 否则第二次 / 继续编译时会「无法创建通知」。
+        sawRunning = false
+        startForeground(NOTIFICATION_ID, buildNotification(DexoptRuntime(message = "准备编译…")))
+        return START_NOT_STICKY
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 

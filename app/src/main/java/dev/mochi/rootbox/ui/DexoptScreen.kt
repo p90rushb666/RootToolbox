@@ -336,6 +336,25 @@ fun DexoptScreen(
             }
         }
 
+        if (ui.reports.isNotEmpty()) {
+            mochiListSection(
+                key = "reports",
+                header = "编译报告",
+                footer = "记录每次编译的范围、模式、线程与成功 / 失败数量（保留最近 50 次）。",
+            ) {
+                ui.reports.asReversed().take(10).forEach { report ->
+                    row(key = "report-${report.id}") {
+                        MochiListRow(
+                            title = formatDateTime(report.finishedAt),
+                            subtitle = "成功 ${report.done} · 失败 ${report.failed} · ${threadLabel(report.threads)}",
+                            value = if (report.failed == 0) "全部成功" else "有失败",
+                            destructive = report.failed > 0,
+                        )
+                    }
+                }
+            }
+        }
+
         item(key = "bottom-space") {
             Spacer(Modifier.height(LocalMochiBottomBarInset.current + 24.dp))
         }
@@ -526,3 +545,6 @@ private val DexoptThreads.iconName: String
         DexoptThreads.ALL -> "flash"
         else -> "options"
     }
+
+private fun threadLabel(threads: Int): String =
+    DexoptThreads.entries.firstOrNull { it.value == threads }?.label ?: "系统档位"

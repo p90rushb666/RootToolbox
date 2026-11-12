@@ -237,7 +237,7 @@ private fun HomeTab(
                 state = state,
                 viewModel = viewModel,
                 navigationIcon = back,
-                onOpenCategory = { category -> nav.push("$RouteModuleCategory:${category.id}", from = RouteModuleCatalog) },
+                onOpenCategory = { category -> nav.push("$RouteModuleCategory:${category.id}") },
                 onOpenDownloads = { nav.push(RouteModuleDownloads) },
                 showToast = showToast,
             )

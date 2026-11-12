@@ -11,6 +11,9 @@ import dev.mochi.rootbox.core.BackupStore
 import dev.mochi.rootbox.core.DexoptApp
 import dev.mochi.rootbox.core.DexoptJob
 import dev.mochi.rootbox.core.DexoptMode
+import dev.mochi.rootbox.core.DexoptPrefs
+import dev.mochi.rootbox.core.DexoptReport
+import dev.mochi.rootbox.core.DexoptReportStore
 import dev.mochi.rootbox.core.DexoptRunner
 import dev.mochi.rootbox.core.DexoptRuntime
 import dev.mochi.rootbox.core.DexoptScope
@@ -95,6 +98,7 @@ data class DexoptUi(
     val threads: DexoptThreads = DexoptThreads.SYSTEM,
     val runtime: DexoptRuntime = DexoptRuntime(),
     val savedJob: DexoptJob? = null,
+    val reports: List<DexoptReport> = emptyList(),
     val error: String? = null,
 ) {
     /** 当前范围要编译的应用。 */
@@ -178,10 +182,28 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var lastWrittenSha: String? = null
 
     init {
-        // dex2oat 执行器是单例，界面只镜像它的状态。
+        // 恢复上次的编译参数与报告。
+        val app = getApplication<Application>()
+        _state.update {
+            it.copy(
+                dexopt = it.dexopt.copy(
+                    scope = DexoptPrefs.loadScope(app),
+                    mode = DexoptPrefs.loadMode(app),
+                    threads = DexoptPrefs.loadThreads(app),
+                    reports = DexoptReportStore.load(app),
+                ),
+            )
+        }
+        // dex2oat 执行器是单例，界面只镜像它的状态；编译结束（running 由 true 变 false）时刷新报告。
         viewModelScope.launch {
+            var wasRunning = false
             DexoptRunner.state.collect { runtime ->
                 _state.update { it.copy(dexopt = it.dexopt.copy(runtime = runtime)) }
+                if (wasRunning && !runtime.running) {
+                    val reports = DexoptReportStore.load(getApplication())
+                    _state.update { it.copy(dexopt = it.dexopt.copy(reports = reports)) }
+                }
+                wasRunning = runtime.running
             }
         }
     }
@@ -752,14 +774,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setDexoptScope(scope: DexoptScope) {
         _state.update { it.copy(dexopt = it.dexopt.copy(scope = scope)) }
+        persistDexoptPrefs()
     }
 
     fun setDexoptMode(mode: DexoptMode) {
         _state.update { it.copy(dexopt = it.dexopt.copy(mode = mode)) }
+        persistDexoptPrefs()
     }
 
     fun setDexoptThreads(threads: DexoptThreads) {
         _state.update { it.copy(dexopt = it.dexopt.copy(threads = threads)) }
+        persistDexoptPrefs()
+    }
+
+    private fun persistDexoptPrefs() {
+        val d = _state.value.dexopt
+        DexoptPrefs.save(getApplication(), d.scope, d.mode, d.threads)
     }
 
     fun startDexopt() {
@@ -845,7 +875,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     // ---------------------------------------------------------------- 模块下载
 
-    /** 先用本地/内置索引把页面填出来；索引过期时联网刷新，完成后才解锁分类；版本查询后台继续。 */
+    /** 用内置/缓存索引把页面填出来（不自动联网），只有手动刷新（force）才联网更新索引；版本查询后台继续。 */
     fun loadCatalog(force: Boolean = false) {
         if (_state.value.catalog.loadingIndex || _state.value.catalog.loadingReleases) return
         viewModelScope.launch {
@@ -856,13 +886,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         index = local.index,
                         indexSource = local.source,
                         indexAt = local.fetchedAt,
+                        // 内置/缓存索引立即就绪，分类直接可进，不再自动联网刷新
+                        indexReady = true,
                     ),
                 )
             }
-            if (force || ModuleCatalogStore.isIndexStale(local)) {
-                _state.update {
-                    it.copy(catalog = it.catalog.copy(loadingIndex = true, indexReady = false, error = null))
-                }
+            if (force) {
+                // 仅手动刷新时才联网更新索引；失败静默保留内置/缓存，不弹「failed to connect」之类的错误。
+                _state.update { it.copy(catalog = it.catalog.copy(loadingIndex = true)) }
                 val refreshed = withContext(Dispatchers.IO) {
                     runCatching { ModuleCatalogStore.refreshIndex(getApplication()) }
                 }
@@ -874,13 +905,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             indexSource = result?.source ?: state.catalog.indexSource,
                             indexAt = result?.fetchedAt ?: state.catalog.indexAt,
                             loadingIndex = false,
-                            indexReady = true,
-                            error = if (result == null) "索引更新失败，已使用本地副本" else null,
                         ),
                     )
                 }
-            } else {
-                _state.update { it.copy(catalog = it.catalog.copy(indexReady = true)) }
             }
             fetchCatalogReleases(force)
             refreshCatalogFiles()
@@ -921,7 +948,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 catalog = state.catalog.copy(
                     loadingReleases = false,
                     releases = result.getOrNull() ?: state.catalog.releases,
-                    error = result.exceptionOrNull()?.let { "部分版本查询失败：${it.message}" },
+                    // 版本查询失败静默（保留缓存 / 显示「暂不可用」），不弹网络错误文案。
                 ),
             )
         }

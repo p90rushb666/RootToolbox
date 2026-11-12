@@ -106,9 +106,9 @@ modules/index.json  # 模块下载页的远程索引（同时打包进 APK 作�
 
 ## 模块下载
 
-打开后先是一级分类页，顶部显示索引来源与加载进度；索引就绪前分类不可进入。点分类进入二级页，列出该分类下的模块（紧凑行、下载按钮在最右）。
+打开后先是一级分类页，顶部显示索引来源与加载进度；点分类以 iOS 侧推转场进入二级页，列出该分类下的模块（紧凑行、下载按钮在最右）。
 
-索引文件在仓库的 `modules/index.json`，应用按以下顺序取用：本地缓存（24 小时内）→ `raw.githubusercontent.com` → `cdn.jsdelivr.net` → APK 内置副本。改动索引只需改这个文件，不用发新版；条目格式：
+**索引内置、手动刷新**：APK 内置一份现成索引（`assets/index.json`），打开即可用，不自动联网；版本号由 GitHub 查询（失败静默、显示「暂不可用」，不弹网络错误）。点「重新检查全部版本」才会手动联网更新索引 + 查询版本。索引文件在仓库的 `modules/index.json`，改它即改内容，不用发新版；条目格式：
 
 ```json
 { "id": "magisk", "name": "Magisk", "category": "root",
@@ -119,9 +119,11 @@ modules/index.json  # 模块下载页的远程索引（同时打包进 APK 作�
 
 ## dex2oat 编译
 
-通过 `cmd package compile -m quicken|speed-profile|speed -f <pkg>` 逐个应用编译（**不带 `--user`**：AOSP 的 `cmd package compile` 不支持该参数，传了会报 `unknown option` 导致每个应用都失败，已去掉）。编译模式（快速 / 热点 / 全量）与线程（系统档位 / 2 / 4 / 8 / 全开）用组件库的分档滑条选择，开始按钮置顶并附当前设置摘要。线程数通过临时 `setprop dalvik.vm.dex2oat-threads <n>` 生效，结束后还原为原值（部分 ROM 会忽略该属性）。任务队列、已完成与失败的包写入 `files/dexopt/job.json`，中断后页面会提示「上次任务未完成」并可从剩余应用继续，完成后展开每个失败应用的具体原因。
+通过 `cmd package compile -m quicken|speed-profile|speed -f <pkg>` 逐个应用编译（**不带 `--user`**：AOSP 的 `cmd package compile` 不支持该参数，传了会报 `unknown option` 导致每个应用都失败，已去掉）。编译范围（用户应用 / 全部应用）、模式（快速 / 热点 / 全量）与线程（系统档位 / 2 / 4 / 8 / 全开）用组件库的分档滑条选择，开始按钮置顶并附当前设置摘要；范围、模式、线程的选择会持久化，下次进入自动恢复。线程数通过临时 `setprop dalvik.vm.dex2oat-threads <n>` 生效，结束后还原为原值（部分 ROM 会忽略该属性）。任务队列、已完成与失败的包写入 `files/dexopt/job.json`，中断后可从剩余应用继续（继续时进度只统计本次运行的包，不会出现「已完成 > 需要编译」），完成后展开每个失败应用的具体原因。
 
-编译期间启动前台服务持有进度通知（开始编译即弹出）。通知为**纯标准通知**（标题 + 正文 + 进度条）：刻意不写小米 `miui.focus.param` / OPPO `com.oplus.notification.fluid.*` 等厂商 extras——手写这些字段极易引用到未注册的图片/动作资源，导致小米 SystemUI 反复崩溃（本项目踩过坑）。想要超级岛效果，建议直接装 [1812z/HyperIsland](https://github.com/1812z/HyperIsland)（LSPosed 模块），它会把标准通知自动转成超级岛/焦点通知，无需 App 配合。无障碍保活第一次由用户手动开启，之后若被系统关闭且已有 Root，会用 Root 自动写回 `Settings.Secure` 重新开启；设置页也可手动跳转通知权限、电池优化白名单与无障碍服务。
+每次编译完成会写入一份**编译报告**（时间、范围、模式、线程、成功 / 失败数量，保留最近 50 条），在编译页底部查看；编译进行中或有未完成任务时，首页顶部会显示进度卡，点击进入编译页。
+
+编译期间启动前台服务持有进度通知（开始编译即弹出，第二次 / 继续编译也会重建通知）。通知为**纯标准通知**（标题 + 正文 + 进度条）：刻意不写小米 `miui.focus.param` / OPPO `com.oplus.notification.fluid.*` 等厂商 extras——手写这些字段极易引用到未注册的图片/动作资源，导致小米 SystemUI 反复崩溃（本项目踩过坑）。想要超级岛效果，建议直接装 [1812z/HyperIsland](https://github.com/1812z/HyperIsland)（LSPosed 模块），它会把标准通知自动转成超级岛/焦点通知，无需 App 配合。无障碍保活第一次由用户手动开启，之后若被系统关闭且已有 Root，会用 Root 自动写回 `Settings.Secure` 重新开启；设置页也可手动跳转通知权限、电池优化白名单与无障碍服务。
 
 ## 已知限制与风险
 
